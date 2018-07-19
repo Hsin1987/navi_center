@@ -7,14 +7,19 @@ import json
 from std_msgs.msg import String, Float32, Float64, Bool
 from navi_planning.hotelGoals import GoalMsg
 from navi_execution.RobotStatus import RobotStatus
+from navi_planning.path_planner import PathPlanner
 from rss.weixin_alarm import WXAlarm
 import time
 import datetime
 import threading
 
 
-param_path = rospy.get_param("~param_path",
+# File Location of the hotel relatived setting.
+param_path = rospy.get_param("param_path",
                              '/home/ubuntu/amr_ws/src/robot_unique_parameters/params/service_setting.yaml')
+# File location of the service path setting.
+hotel_setting_path = rospy.get_param("hotel_setting_path",
+                                     '/home/ubuntu/amr_ws/src/robot_unique_parameters/params/service_path.csv')
 
 battery_capacity_threshold = rospy.get_param("battery_capacity_threshold", 20.0)
 
@@ -53,15 +58,12 @@ def loading_service_parameter():
     return yaml.load(params_raw)
 
 
-def planning_path(hotel_goal):
+def setting_robot_mission(hotel_goal):
     global robotStatus
     robotStatus.set_status('planning')
+    robotStatus.set_mission(hotel_goal)
     pub_robot_status()
-    # TODO: 20180718  Add path planner here.
-
-
-
-
+    rospy.loginfo('[NC] Goal Monitor Confirm the hotelGoal.')
     return
 
 
@@ -84,8 +86,8 @@ def reject_goal(hotel_goal):
 
 def return_station(hotel_goal):
     global robotStatus
-    if hotel_goal == 'station' or hotel_goal in service_dict['stationCode']:
-        planning_path(hotel_goal)
+    if hotel_goal == 'station' or hotel_goal in service_dict['stationCode'][0]:
+        setting_robot_mission(hotel_goal)
         return
     else:
         # Feedback UI, it can't take task now.
@@ -98,7 +100,8 @@ def return_station(hotel_goal):
         return
 
 
-# Pre-process for
+# Monitor and check the delivery task input. Reject or Update the mission accordingly.
+# If reject, simply feedback 'busy'. Otherwise, broadcast if through robot_status (by setting_robot_mission()).
 def goal_monitor(received_goal):
     global lock
     # lock the global variable: robotStatus
@@ -107,18 +110,23 @@ def goal_monitor(received_goal):
     reaction = {
         'charging': reject_goal,
         'need_charging': return_station,
-        'available': planning_path}
+        'available': setting_robot_mission}
 
     # Check the hotel_goal in the list:
     if received_goal.data in service_dict['hotelGoals'][0]:
         hotel_goal = received_goal.data
         rospy.loginfo("[NC] Received hotelGoal: " + hotel_goal)
-    elif received_goal.data[1:4] in service_dict['stationCode']:
-        hotel_goal = 'station'
+    elif received_goal.data[1:4] in service_dict['stationCode'][0]:
+        hotel_goal = 'Station'
         rospy.loginfo("[NC] Received hotelGoal: " + hotel_goal)
     else:
         right_goal = False
-        hotel_goal = received_goal.data[1:4]
+        # For Elevator Waiting position
+        if received_goal.data[0:3] == 'EVW':
+            hotel_goal = received_goal.data
+        # For room number
+        else:
+            hotel_goal = received_goal.data[1:4]
         for goal_list in service_dict['hotelGoals']:
             if hotel_goal in goal_list:
                 right_goal = True
@@ -135,8 +143,8 @@ def goal_monitor(received_goal):
 
     # Choose the reaction plan according to the current status.
     if robotStatus.status in reaction.keys():
-        functionToCall = reaction[robotStatus.status]
-        functionToCall(hotel_goal)
+        function_to_call = reaction[robotStatus.status]
+        function_to_call(hotel_goal)
     else:
         reject_goal('busy')
 
@@ -167,6 +175,7 @@ def system_health():
         return
 
 
+# Check the battery capacity. Update and trigger warning when it's too low.
 def battery_monitor(battery_capacity):
     global robotStatus, battery_rss_timestamp
     robotStatus.capacity = battery_capacity.data
@@ -277,14 +286,22 @@ def navi_center():
 
     # Initialize position(default or by TopView_Tag) and status
     status_initiaization()
+    path_planner = PathPlanner()
+    path_planner.setting(service_dict['hotelGoals'])
     rospy.loginfo("[NC] AMR Launched Success.")
 
     # 2. Planning Phase.
-    # 2-1. Subscribe a /hotelGoal.
+    # 2-1. Start the 'Goal_Monitor: 'Subscribe a /hotelGoal.
+    # Monitor and check the delivery task input. Reject or Update the mission accordingly.
+    # If reject, simply feedback 'busy'. Otherwise, broadcast if through robot_status (by setting_robot_mission()).
     rospy.Subscriber('/hotelGoal', String, goal_monitor)
-    # 2-N. un-Subscribe /hotelGoal
-
     # 3. Task Execution Phase.
+
+    # Use Dictionary to choose what to do .
+    # Trigger the Execution
+    if robotStatus.status == 'planning':
+
+
 
     # R. Recovery Mode.
 
