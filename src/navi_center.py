@@ -4,11 +4,17 @@
 import rospy
 import yaml
 import json
+
 from std_msgs.msg import String, Float32, Float64, Bool
 from navi_planning.hotelGoals import GoalMsg
 from navi_execution.RobotStatus import RobotStatus
 from navi_planning.path_planner import PathPlanner
+from rss.node_monitor import *
 from rss.weixin_alarm import WXAlarm
+
+from geometry_msgs.msg import PoseWithCovarianceStamped
+
+import dynamic_reconfigure.client
 import time
 import datetime
 import threading
@@ -17,11 +23,12 @@ import threading
 # File Location of the hotel relatived setting.
 param_path = rospy.get_param("param_path",
                              '/home/ubuntu/amr_ws/src/robot_unique_parameters/params/service_setting.yaml')
-# File location of the service path setting.
-hotel_setting_path = rospy.get_param("hotel_setting_path",
-                                     '/home/ubuntu/amr_ws/src/robot_unique_parameters/params/service_path.csv')
 
 battery_capacity_threshold = rospy.get_param("battery_capacity_threshold", 20.0)
+
+# Subsystem Switch
+rss_on = rospy.get_param("rss_on", False)
+
 
 # Global Service parameter
 service_dict = {}
@@ -36,18 +43,22 @@ battery_rss_timestamp = None
 charging_connected = False
 
 # ===== Topic Publisher ===== #
-
 # AMR machine reboot trigger
 rebootPub = rospy.Publisher('/reqDeepReboot', Float64, queue_size=1)
-
 # AMR Status Report Agent
 robotStatusPub = rospy.Publisher('/amr_status_agent', String, queue_size=1, latch=True)
-
 # Voice Channel
 ttsPub = rospy.Publisher('/web/tts_request', String, queue_size=1)
-
 # navigation_execution relative topic publisher
 hotelGoalCB_Pub = rospy.Publisher('/hotelGoalCB', String, queue_size=1)
+# Map & Position Init
+changeNavMapPub = rospy.Publisher('/map_server_nav/reload', String, queue_size=1)
+changeAMCLMapPub = rospy.Publisher('/map_server_amcl/reload', String, queue_size=1)
+initPosePub = rospy.Publisher('/initialpose', PoseWithCovarianceStamped, queue_size=10)
+
+
+def dynamic_reconfigure_cb():
+    rospy.loginfo("[nc_ros] dynamicReconfigureCallback() is called")
 
 
 # Loading the service parameter from robot_unique_parameter
@@ -86,7 +97,7 @@ def reject_goal(hotel_goal):
 
 def return_station(hotel_goal):
     global robotStatus
-    if hotel_goal == 'station' or hotel_goal in service_dict['stationCode'][0]:
+    if hotel_goal == 'station' or hotel_goal in service_dict['stationCode']:
         setting_robot_mission(hotel_goal)
         return
     else:
@@ -106,6 +117,7 @@ def goal_monitor(received_goal):
     global lock
     # lock the global variable: robotStatus
     lock.acquire()
+    # TODO: Add Node Test & Connection Test, PASS: Proceed, Fail: Rejecct goal & Warning.
     # Reaction Plan
     reaction = {
         'charging': reject_goal,
@@ -116,7 +128,7 @@ def goal_monitor(received_goal):
     if received_goal.data in service_dict['hotelGoals'][0]:
         hotel_goal = received_goal.data
         rospy.loginfo("[NC] Received hotelGoal: " + hotel_goal)
-    elif received_goal.data[1:4] in service_dict['stationCode'][0]:
+    elif received_goal.data[1:4] in service_dict['stationCode']:
         hotel_goal = 'Station'
         rospy.loginfo("[NC] Received hotelGoal: " + hotel_goal)
     else:
@@ -155,11 +167,32 @@ def goal_monitor(received_goal):
 # Check all the available node are online & alive.
 def node_monitor():
     # TODO: Node monitor, try 3 mins with 3s gap.Success >> > proceed.Fail >> > Reboot
-    return True
+    # Check the node_list_1
+    fine, result = checkNodeExistence(service_dict['node_list_1']+service_dict['node_list_2'])
+    if not fine:
+        ts = time.time()
+        for node, alive in result.items():
+            if not alive:
+                msg = '[NC] Initlization Failed: ' + node + ' is dead. Reboot the Robot.'
+                rospy.logfatal(msg)
+                st = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+                if rss_on:
+                    rss_notification.sent(
+                        str(st) + " " + service_dict['AMR_ID'] + msg, '@all')
+        msg = '[NC] Initlization Failed. Reboot the Robot.'
+        st = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+        if rss_on:
+            rss_notification.sent(
+                str(st) + " " + service_dict['AMR_ID'] + msg, '@all')
+        return False
+    else:
+        return True
 
 
 def system_health():
-    global robotStatus
+    # TODO: Add WiFi connection Test
+    # Wait 5s for all the launch process finished.
+    rospy.sleep(5)
     # Successfully
     if node_monitor():
         # Change Status from 'init' to 'charging' or 'available'
@@ -167,8 +200,6 @@ def system_health():
         return
     # Boost Fail
     else:
-        # TODO: export the failure list.
-        rospy.logerr("[NC] Init Process: Check subsystem >>> FAIL, Reboot the robot.")
         # Trigger the reboot
         rebootPub.publish(30.0)
         rospy.sleep(120)
@@ -182,7 +213,8 @@ def battery_monitor(battery_capacity):
     ts = time.time()
     if battery_capacity.data < battery_capacity_threshold and (battery_rss_timestamp is None):
         st = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
-        rss_notification.sent(str(st) + " " + service_dict['AMR_ID'] + ": Low Battery ! PLEASE CHECK.", '@all')
+        if rss_on:
+            rss_notification.sent(str(st) + " " + service_dict['AMR_ID'] + ": Low Battery ! PLEASE CHECK.", '@all')
         rospy.logwarn("[rss_server]: Low Battery ! PLEASE CHECK. Request RSS.")
         battery_rss_timestamp = ts
     elif battery_capacity.data >= 20.0:
@@ -225,36 +257,105 @@ def pub_robot_status():
     return
 
 
-def status_initiaization():
+def resource_monitor():
+    global robotStatus, lock
+    reboot_time = service_dict['rebootTime']
+    while True:
+        # Daily Reboot
+        if time.localtime().tm_hour == reboot_time and time.localtime().tm_min == 0:
+            while True:
+                if robotStatus.status in ['charging', 'need_charging', 'available'] and \
+                                robotStatus.position is 'station':
+                    lock.acquire()
+                    rospy.loginfo('[NC] Daily Reboot.')
+                    # Change the statue to block new task
+                    robotStatus.set_status('init')
+                    rospy.loginfo('tts: 执行机器人定期重启')
+                    announceMsg = unicode('执行机器人定期重启', 'utf-8')
+                    ttsPub.publish(announceMsg)
+                    rospy.sleep(5)
+                    rebootPub.publish(30.0)
+                    rospy.sleep(120)
+                    lock.release()
+                else:
+                    rospy.loginfo("[NC]: Wait for mission complete Then, reboot.")
+                    rospy.sleep(10)
+        # Critical Resource Monitor: Nodes, connection
+        # TODO: Add WiFi Connection Monitor
+        else:
+            if rss_on:
+                # Check the node_list_1
+                fine, result = checkNodeExistence(service_dict['node_list_1'])
+                if not fine:
+                    for node, alive in result.items():
+                        if not alive:
+                            rospy.logwarn('[NC Resource Monitor]' + node + " is dead.")
+                            # TODO: Add  node relaunch process.
+                # Check the node_list_2
+                fine, result = checkNodeExistence(service_dict['node_list_2'])
+                if not fine:
+                    ts = time.time()
+                    for node, alive in result.items():
+                        if not alive:
+                            msg = '[NC Resource Monitor]' + node + " is dead. Request RSS."
+                            rospy.logfatal(msg)
+                            st = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+                            rss_notification.sent(
+                                str(st) + " " + service_dict['AMR_ID'] + msg + " PLEASE CHECK.", '@all')
+                rospy.sleep(30)
+            else:
+                rospy.sleep(60)
+            pass
+
+
+def status_init(status):
     global robotStatus, lock
     # Lock the global variable.
     lock.acquire()
-
-    # Default: Lobby
-    if charging_connected:
-        robotStatus.set_position('station', service_dict['hotelGoals'])
-        if robotStatus.capacity >= battery_capacity_threshold:
-            robotStatus.set_status('available')
+    if status == 'init':
+        # Default: Lobby
+        if charging_connected:
+            robotStatus.set_position('station', service_dict['hotelGoals'])
+            if robotStatus.capacity >= battery_capacity_threshold:
+                robotStatus.set_status('available')
+            else:
+                robotStatus.set_status('charging')
         else:
-            robotStatus.set_status('charging')
+            # TODO: Check the Tag ID for localization.
+            # Subscribe the tag_topic, then setting the robot.position.
+            # tts info
+            rospy.loginfo('tts: 机器人未于充电站内启动，请协助移动至充电站或各楼层电梯口前，完成定位')
+            announce = unicode('机器人未于充电站内启动，请协助移动至充电站或各楼层电梯口前，完成定位', 'utf-8')
+            ttsPub.publish(announce)
+            # Subscribe the tag_topic, then setting the robot.position
+            if robotStatus.capacity >= battery_capacity_threshold:
+                robotStatus.set_status('available')
+                robotStatus.set_position('Lobby', service_dict['hotelGoals'])
+            else:
+                robotStatus.set_status('need_charging')
+                robotStatus.set_position('Lobby', service_dict['hotelGoals'])
+        pub_robot_status()
+        # Release the global variable.
+        lock.release()
+        return
     else:
-        # TODO: Check the Tag ID for localization.
-        # Subscribe the tag_topic, then setting the robot.position.
-        # tts info
-        rospy.loginfo('tts: 机器人未于充电站内启动，请协助移动至充电站或各楼层电梯口前，完成定位')
-        announce = unicode('机器人未于充电站内启动，请协助移动至充电站或各楼层电梯口前，完成定位', 'utf-8')
-        ttsPub.publish(announce)
-        # Subscribe the tag_topic, then setting the robot.position
-        if robotStatus.capacity >= battery_capacity_threshold:
-            robotStatus.set_status('available')
-            robotStatus.set_position('Lobby', service_dict['hotelGoals'])
+        # Default: Lobby
+        if charging_connected:
+            robotStatus.set_position('station', service_dict['hotelGoals'])
+            if robotStatus.capacity >= battery_capacity_threshold:
+                robotStatus.set_status('available')
+            else:
+                robotStatus.set_status('charging')
         else:
-            robotStatus.set_status('need_charging')
-            robotStatus.set_position('Lobby', service_dict['hotelGoals'])
-    pub_robot_status()
-    # Release the global variable.
-    lock.release()
-    return
+            if robotStatus.capacity >= battery_capacity_threshold:
+                robotStatus.set_status('available')
+            else:
+                robotStatus.set_status('need_charging')
+        pub_robot_status()
+        # Release the global variable.
+        lock.release()
+        return
+
 
 
 def navi_center():
@@ -271,7 +372,13 @@ def navi_center():
     # ----------   Check System Boost up Successfully ------ #
     rospy.loginfo('[NC] Init Process: Check subsystem.')
     # Check all the necessary node are online and alive.
-    system_health()
+    # TODO: Add WiFi Connection Test in system_health
+    # system_health()
+    # Start the "All time resource_monitor": Check node, connection & daily reboot
+    resource_monitor_thread = threading.Thread(target=resource_monitor)
+    resource_monitor_thread.daemon = True
+    resource_monitor_thread.start()
+
     # ====================================================== #
     # 1. Init >>> Standby Phase
     # ====================================================== #
@@ -285,7 +392,14 @@ def navi_center():
     # rospy.Subscriber('/base/lock', Bool, bumperHit)
 
     # Initialize position(default or by TopView_Tag) and status
-    status_initiaization()
+    status_init(robotStatus.status)
+
+    # TODO: Loading Map & Localization
+    # Register DWA_Planner Serice
+    rospy.wait_for_service("/move_base/DWAPlannerROS/set_parameters")
+    client = dynamic_reconfigure.client.Client("/move_base/DWAPlannerROS", timeout=30,
+                                               config_callback=dynamic_reconfigure_cb)
+    # Init the path_planner
     path_planner = PathPlanner()
     path_planner.setting(service_dict['hotelGoals'])
     rospy.loginfo("[NC] AMR Launched Success.")
@@ -296,12 +410,43 @@ def navi_center():
     # If reject, simply feedback 'busy'. Otherwise, broadcast if through robot_status (by setting_robot_mission()).
     rospy.Subscriber('/hotelGoal', String, goal_monitor)
     # 3. Task Execution Phase.
+    if robotStatus.mission is not None:
+        task_path = path_planner.path_agent(robotStatus.position, robotStatus.mission)
+        # Check the result is not empty.
+        if not task_path:
+            hotelGoalCB_Pub.publish('busy')
+            rospy.loginfo('tts: 无法规划路径，请重新输入正确房号')
+            announce = unicode('无法规划路径，请重新输入正确房号', 'utf-8')
+            rospy.logwarn("[NC] Path Planning Failed. Reject it And Ask for Correction.")
+            # Reset the robot status
+            robotStatus.mission_done()
+            status_init(robotStatus.status)
+            ttsPub.publish(announce)
+        # Receive task path
+        else:
+            # 3-1 Use Dictionary to choose what to do .
+            """
+            task_phase = {
+                'planning': start_mission,
+                'moving': ,
+                'waitingEV': setting_robot_mission,
+                'waitingEV_C': setting_robot_mission,
+                'checkingEV': setting_robot_mission,
+                'enteringEV':
+                'inEV':
+                'in_EV_C':
+                'in_EV_R':
+                'alightingEV':
+                # reached, set mission == None
+                'reached'
+            }
 
-    # Use Dictionary to choose what to do .
-    # Trigger the Execution
-    if robotStatus.status == 'planning':
-
-
+            if robotStatus.status in task_phase.keys():
+                function_to_call = task_phase[robotStatus.status]
+                function_to_call()
+            else:
+                reject_goal('busy')
+            """
 
     # R. Recovery Mode.
 

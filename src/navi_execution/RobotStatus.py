@@ -56,15 +56,9 @@ class RobotStatus:
         # Aborted Task Counter: [move_base, ev_safetyCheck, ev_c_Check]
         self.abortCount = [0, 0, 0]
 
-    # ===== Status Check ===== #
-    def status_check(self, _input):
-        if _input in robot_status and _input == self.status:
-            return True
-        else:
-            return False
-
     # ===== Status Setting ===== #
     def set_status(self, status_input):
+        global robot_status
         if status_input in robot_status:
             self.status = status_input
             # Set successfully
@@ -74,16 +68,22 @@ class RobotStatus:
 
     # ===== Setting Mission ===== #
     def set_mission(self, new_mission, hotel_goals):
+        global robot_status
         for floor, goal_list in enumerate(hotel_goals):
             if new_mission in goal_list:
                 self.mission = new_mission
                 return True
             else:
-                print('No')
                 return False
 
     # ===== Setting Mission ===== #
+    def mission_done(self):
+        global robot_status
+        robot_status.mission = None
+
+    # ===== Setting Mission ===== #
     def set_position(self, position_input, hotel_goals):
+        global robot_status
         for floor, goal_list in enumerate(hotel_goals):
             if position_input in goal_list:
                 self.position = position_input

@@ -79,7 +79,7 @@ class PathPlanner:
         print(self.pathDic)
         print("DONE")
 
-    def path_planner(self, start, destination):
+    def path_agent(self, start, destination):
         rospy.loginfo('[NC] Start Path Planner. From: ' + str(start) + ' to ' + str(destination) + '.')
         planner_success = self.dijkstra(self.pathDic, start, destination)
         if planner_success:
