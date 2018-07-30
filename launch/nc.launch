@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="ISO-8859-15"?>
-
-<launch>
-
-  <node pkg="navi_center" type="rss_server.py" name="rss_server" output="screen">
-    <!--Load AMR parameters to rosparam server-->
-    <rosparam command="load" file="$(find robot_unique_parameters)/params/service_setting.yaml"/>
-  </node>
-</launch>

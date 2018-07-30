@@ -3,17 +3,17 @@ import rospkg
 import yaml
 from std_msgs.msg import String
 from geometry_msgs.msg import PoseWithCovarianceStamped
-
 # Map & Position Init
 changeNavMapPub = rospy.Publisher('/map_server_nav/reload', String, queue_size=1)
 changeAMCLMapPub = rospy.Publisher('/map_server_amcl/reload', String, queue_size=1)
 initPosePub = rospy.Publisher('/initialpose', PoseWithCovarianceStamped, queue_size=10)
 
 # Global Service parameter
-service_dict = {}
-param_path = '/home/ubuntu/amr_ws/src/robot_unique_parameters/params/service_setting.yaml'
+# service_dict = {}
+# param_path = '/home/ubuntu/amr_ws/src/robot_unique_parameters/params/service_setting.yaml'
 
 
+# Loading the service parameter from robot_unique_parameter
 def loading_service_parameter():
     f = open(param_path, 'r')
     params_raw = f.read()
@@ -21,45 +21,54 @@ def loading_service_parameter():
     return yaml.load(params_raw)
 
 
-def change_map(floor):
-    global service_dict
+def init_pose_on_map(floor, service_dict):
+    init_pose = PoseWithCovarianceStamped()
+    init_pose_setting = service_dict['init_pose']
+    # Universal Setting
+    init_pose.header.frame_id = 'map'
+    init_pose.pose.covariance[0] = 0.25
+    init_pose.pose.covariance[7] = 0.25
+    init_pose.pose.covariance[35] = 0.066
+
+    # Deal with the standard floor:
+    if floor in service_dict['station_floor']:
+        floor = 0
+    elif floor in service_dict['standard_floor']:
+        # Choose the second setting for standard floor.
+        floor = 1
+    else:
+        rospy.logwarn('[NC map_client] Initialize Pose Failure. Receive a wrong floor input.')
+        rospy.logwarn('[NC map_client] input = ' + str(floor))
+        return None
+    # Fill in the pose setting
+    init_pose.pose.pose.position.x = init_pose_setting[floor][0]
+    init_pose.pose.pose.position.y = init_pose_setting[floor][1]
+    init_pose.pose.pose.orientation.z = init_pose_setting[floor][2]
+    init_pose.pose.pose.orientation.w = init_pose_setting[floor][3]
+    return init_pose
+
+
+def map_client(floor, service_dict):
     ros_package = rospkg.RosPack()
     path = ros_package.get_path('navi_center')
 
-    map_path = path + '/map/'
+    nav_map_path = path + '/map/map' + floor[0:-1] + '_nav.yaml'
+    amcl_map_path = path + '/map/map' + floor[0:-1] + '_amcl.yaml'
 
-    # pubMsg = {1F:'change to 1F', 2F:'change to 2F', 3F:'change to 3F', 4F:'change to 4F'}
-    pubNavMsg = {
-        1: packPath+'/map/map'+str(floor)+'_nav.yaml',
-        2: packPath+'/map/map'+str(floor)+'_nav.yaml',
-        3: packPath+'/map/map'+str(floor)+'_nav.yaml',
-        4: packPath+'/map/map'+str(floor)+'_nav.yaml',
-        5: packPath+'/map/map'+str(floor)+'_nav.yaml',
-        6: packPath+'/map/map'+str(floor)+'_nav.yaml',
-        7: packPath+'/map/map'+str(floor)+'_nav.yaml',
-        8: packPath+'/map/map'+str(floor)+'_nav.yaml'
-    }
-
-    pubAmclMsg = {
-        1: packPath+'/map/map'+str(floor)+'_amcl.yaml',
-        2: packPath+'/map/map'+str(floor)+'_amcl.yaml',
-        3: packPath+'/map/map'+str(floor)+'_amcl.yaml',
-        4: packPath+'/map/map'+str(floor)+'_amcl.yaml',
-        5: packPath+'/map/map'+str(floor)+'_amcl.yaml',
-        6: packPath+'/map/map'+str(floor)+'_amcl.yaml',
-        7: packPath+'/map/map'+str(floor)+'_amcl.yaml',
-        8: packPath+'/map/map'+str(floor)+'_amcl.yaml'
-    }
-    """
-    changeNavMapPub.publish(pubNavMsg[floor])
-    changeAmclMCLMapPub.publish(pubAmclMsg[floor])
+    changeNavMapPub.publish(nav_map_path)
+    changeAMCLMapPub.publish(amcl_map_path)
+    # Time for map loading
     rospy.sleep(6.0)
-    newMapPose = hotelGoals.getInitPose(floor)
-    newMapPose.header.stamp = rospy.Time.now()
-    initPosePub.publish(newMapPose)
-    """
+    init_pose = init_pose_on_map(floor, service_dict)
+    init_pose.header.stamp = rospy.Time.now()
+    initPosePub.publish(init_pose)
     return
 
+if __name__ == '__main__':
+    try:
+        service_dict = loading_service_parameter()
+        rospy.init_node("map_client")
+        map_client('2F')
 
-service_dict = loading_service_parameter()
-change_map()
+    except rospy.ROSInterruptException:
+        pass

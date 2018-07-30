@@ -114,5 +114,5 @@ class PathPlanner:
         return False
 
 if __name__ == '__main__':
-    path_planner = path_planner()
+    path_planner = PathPlanner()
     print(path_planner.path_planner('EVW4S', 'Station'))

@@ -33,7 +33,7 @@ contain in the specific status.
     # Use
 """
 
-robot_status = ('init',   'charging',  'need_charging', 'available',   'planning',
+robot_status = ('init',   'charging',  'need_charging', 'available',   'received_mission',
                 'moving', 'waitingEV', 'waitingEV_C',   'checkingEV',  'enteringEV',
                 'inEV',   'inEV_C',    'inEV_R',        'alightingEV', 'reached',
                 'rss_request', 'rss_mode')
@@ -43,7 +43,9 @@ class RobotStatus:
     def __init__(self):
         # Robot Statue: indicate the stage of task.
         self.status = 'init'
-        # Last position of AMR.
+        # Current floor.
+        # ==  Default: Lobby
+        self.floor = '1F'
         # ==  Default: Lobby
         self.position = 'Lobby'
         # hotelGoal, received task.
@@ -89,5 +91,4 @@ class RobotStatus:
                 self.position = position_input
                 return True
             else:
-                print('No')
                 return False
