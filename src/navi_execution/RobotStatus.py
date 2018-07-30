@@ -34,7 +34,8 @@ contain in the specific status.
 """
 
 robot_status = ('init',   'charging',  'need_charging', 'available',   'received_mission',
-                'moving', 'waitingEV', 'waitingEV_C',   'checkingEV',  'enteringEV',
+                'moving', 'moving_reached', 'retry_goal'
+                'waitingEV', 'waitingEV_C',   'checkingEV',  'enteringEV',
                 'inEV',   'inEV_C',    'inEV_R',        'alightingEV', 'reached',
                 'rss_request', 'rss_mode')
 

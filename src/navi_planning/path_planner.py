@@ -84,12 +84,11 @@ class PathPlanner:
         planner_success = self.dijkstra(self.pathDic, start, destination)
         if planner_success:
             rospy.loginfo('[NC] Path : ' + str(self.path))
-            return self.path
+            # Remove the current position from the path list.
+            return self.path.pop(0)
         else:
             rospy.logwarn('[NC] Path Planning Fail.')
             return []
-
-
 
     # Dijkstra Algorithm: find the shortest path
     def dijkstra(self, pathdic, start, destination):
@@ -115,4 +114,5 @@ class PathPlanner:
 
 if __name__ == '__main__':
     path_planner = PathPlanner()
-    print(path_planner.path_planner('EVW4S', 'Station'))
+    path_planner.setting()
+    print(path_planner.path_agent('EVW4S', 'Station'))

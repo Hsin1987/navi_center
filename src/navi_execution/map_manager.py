@@ -10,7 +10,7 @@ initPosePub = rospy.Publisher('/initialpose', PoseWithCovarianceStamped, queue_s
 
 # Global Service parameter
 # service_dict = {}
-# param_path = '/home/ubuntu/amr_ws/src/robot_unique_parameters/params/service_setting.yaml'
+param_path = '/home/ubuntu/amr_ws/src/robot_unique_parameters/params/service_setting.yaml'
 
 
 # Loading the service parameter from robot_unique_parameter

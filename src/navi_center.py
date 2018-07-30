@@ -4,16 +4,17 @@
 import rospy
 import yaml
 import json
-
+import std_srvs.srv
 from std_msgs.msg import String, Float32, Float64, Bool
-from navi_planning.hotelGoals import GoalMsg
 from navi_execution.RobotStatus import RobotStatus
 from navi_planning.path_planner import PathPlanner
 from navi_execution.map_manager import map_client
+from navi_execution.goal_manager import set_tolerance, goal_agent
 from rss.node_monitor import *
 from rss.weixin_alarm import WXAlarm
 
-from geometry_msgs.msg import PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped
+from move_base_msgs.msg import MoveBaseActionResult
 
 import dynamic_reconfigure.client
 import time
@@ -48,8 +49,6 @@ charging_connected = False
 pmu_online = True
 
 
-
-
 # ===== Topic Publisher ===== #
 # AMR machine reboot trigger
 rebootPub = rospy.Publisher('/reqDeepReboot', Float64, queue_size=1)
@@ -69,9 +68,24 @@ initPosePub = rospy.Publisher('/initialpose', PoseWithCovarianceStamped, queue_s
 enterStationPub = rospy.Publisher('/enterStation', Bool, queue_size=1)
 departStationPub = rospy.Publisher('/departStation', Bool, queue_size=1)
 
+# M1. Move_Base Goal
+goalPub = rospy.Publisher('/move_base_simple/goal', PoseStamped, queue_size=1)
+
 
 def dynamic_reconfigure_cb():
     rospy.loginfo("[nc_ros] dynamicReconfigureCallback() is called")
+
+
+# Call the move_base service: clear costmap for restart trying.
+def clear_costmap():
+    try:
+        src_client = rospy.ServiceProxy('/move_base/clear_costmaps', std_srvs.srv.Empty)
+        src_client()
+        rospy.sleep(5.0)
+    except rospy.ServiceException, e:
+        str_msg = "[NC] Call clear_costmaps Service  failed: " + str(e)
+        rospy.logwarn(str_msg)
+        rospy.sleep(5.0)
 
 
 def pmu_monitor(online):
@@ -107,7 +121,7 @@ def setting_robot_mission(hotel_goal):
         # Reset the robot status
         robotStatus.mission_done()
         # Reset the status
-        status_client(robotStatus.status)
+        status_agent()
         ttsPub.publish(announce)
         pub_robot_status()
     robotStatus.set_status('received_mission')
@@ -339,15 +353,15 @@ def resource_monitor():
             pass
 
 
-def status_client(status):
+def status_agent():
     global robotStatus, lock
     # Lock the global variable.
     lock.acquire()
-    if status == 'init':
+    if robotStatus.status == 'init':
         # Default: Lobby
         if charging_connected:
             # Update the position
-            robotStatus.set_position('station', service_dict['hotelGoals'])
+            robotStatus.set_position('Station', service_dict['hotelGoals'])
             # Update the current floor
             robotStatus.floor = service_dict['station_floor']
             if robotStatus.capacity >= battery_capacity_threshold:
@@ -376,23 +390,26 @@ def status_client(status):
     # Reset the status, not position.
     else:
         if charging_connected:
-            robotStatus.set_position('station', service_dict['hotelGoals'])
+            robotStatus.set_position('Station', service_dict['hotelGoals'])
             if robotStatus.capacity >= battery_capacity_threshold:
                 robotStatus.set_status('available')
             else:
                 robotStatus.set_status('charging')
+        # For Task Complete Case.
+        elif robotStatus.status == "reached":
+            rospy.loginfo('[NC] Mission reached, reset status to "available"')
+            robotStatus.set_status('available')
         else:
-            if robotStatus.capacity >= battery_capacity_threshold:
-                robotStatus.set_status('available')
-            else:
-                robotStatus.set_status('need_charging')
+            rospy.loginfo('[NC] reset status to "available"')
+            robotStatus.set_status('available')
+            
         pub_robot_status()
         # Release the global variable.
         lock.release()
         return
 
 
-def depart_station(task_path):
+def depart_station(mission_path):
     global lock, robotStatus
     lock.acquire()
     rospy.loginfo('[NC] AMR is going to depart the station.')
@@ -401,7 +418,7 @@ def depart_station(task_path):
     rospy.loginfo('tts: 请小心，机器人将离开充电区 ')
     msg = unicode('请小心, 机器人将离开充电区.', 'utf-8')
     rospy.loginfo("[NC] Departing Station >>> >>> >>> ")
-    ttsPub(msg)
+    ttsPub.publish(msg)
     rospy.sleep(3.0)
     departStationPub.publish(True)
     # Release the global status.
@@ -414,7 +431,7 @@ def depart_station(task_path):
     _sub.unregister()
     rospy.loginfo('[NC] >>> Departure Finished.')
     pub_robot_status()
-    return task_path.pop(0)
+    return mission_path.pop(0)
 
 
 def depart_callback(success):
@@ -435,7 +452,7 @@ def depart_callback(success):
     return
 
 
-def enter_station(task_path):
+def enter_station(mission_path):
     global lock, robotStatus
     lock.acquire()
     if pmu_online:
@@ -445,24 +462,25 @@ def enter_station(task_path):
         rospy.loginfo('tts: 机器人到家了..请小心, 机器人将回到充电区. ')
         msg = unicode('机器人到家了..请小心, 机器人将回到充电区..', 'utf-8')
         rospy.loginfo("[NC] Entering Station >>> >>> >>> ")
-        ttsPub(msg)
+        ttsPub.publish(msg)
         rospy.sleep(3.0)
         departStationPub.publish(True)
         # Release the global status.
         lock.release()
         # Wait for Entering Complete
+        # TODO: It's dangerous here.
         while robotStatus.position != 'Station':
             rospy.sleep(1)
         _sub.unregister()
         pub_robot_status()
         rospy.loginfo('[NC] >>> Entering Finished.')
         lock.release()
-        return task_path.pop(0)
+        return mission_path.pop(0)
     else:
         rospy.logwarn('[NC] PMU_Offline, Abort Entering.')
         lock.release()
         pub_robot_status()
-        return task_path.pop(0)
+        return mission_path.pop(0)
 
 
 def entering_callback(success):
@@ -483,8 +501,101 @@ def entering_callback(success):
     return
 
 
-def move_base_function(task_path):
-    return task_path.pop(0)
+def move_base_agent(mission_path, client):
+    global lock, robotStatus
+    lock.acquire()
+    current_goal = mission_path[0]
+    # Loading the destination coordinate
+    pose, yaw_tol, xy_tol = goal_agent(current_goal, service_dict)
+    # Set Tolerance
+    set_tolerance(yaw_tol, xy_tol, client)
+
+    rospy.loginfo('[NC] Sent a goal to Move_base.')
+    # Subscribe the callback Function
+    _sub = rospy.Subscriber('/move_base/result', MoveBaseActionResult, move_base_callback)
+    # Publish the move_base goal.
+    goalPub.publish(pose)
+    # Release the global status.
+    robotStatus.set_status('moving')
+    pub_robot_status()
+    lock.release()
+    # Wait for Move_base's confirmation
+    while True:
+        if robotStatus.status == 'moving_reached':
+            robotStatus.set_position(current_goal)
+            robotStatus.set_status('moving')
+            pub_robot_status()
+            _sub.unregister()
+            # Return the following path.
+            return mission_path.pop(0)
+        elif robotStatus.status == 'retry_goal':
+            robotStatus.set_status('moving')
+            pub_robot_status()
+            _sub.unregister()
+            # Return the same path
+            return mission_path
+        else:
+            rospy.sleep(1.0)
+
+
+def move_base_callback(msg):
+    global robotStatus, lock
+    lock.acquire()
+    if msg.status.status == 3:
+        # node goal reached
+        robotStatus.set_status('moving_reached')
+        pub_robot_status()
+
+    elif msg.status.status == 2:
+        # move_base goal preempted
+        rospy.logwarn("[NC] Move_base Goal preempted.")
+
+    elif msg.status.status == 4:
+        # node goal aborted
+        rospy.logwarn("[NC] Move_base aborted")
+        robotStatus.abortCount[0] += 1
+        # RSS Notification when aborting 5 times
+        if robotStatus.abortCount[0] % 5 == 0:
+            ts = time.time()
+            st = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+            if rss_on:
+                rss_notification.sent(str(st) + " "
+                                      + service_dict['AMR_ID']
+                                      + " : Move_base aborted 5 times. Request RSS attention. ", '@all')
+
+            # TODO: PHONE Pushing & Logging Thread
+            """
+            # push notification to operator
+            msg = '机器人被大型障碍物挡住了, 请派服务员前往处理'
+            threadY = pushingThread(msg)
+            threadY.start()
+
+            # logging
+            msg = 'Got stopper obstacles'
+            threadX = loggingThread(msg)
+            threadX.start()
+            """
+        # Voice Warning
+        tts_msg = unicode('请借过, 我需要多一点空间', 'utf-8')
+        ttsPub.publish(tts_msg)
+
+        # Clear costmap
+        rospy.loginfo("[NC] call /move_base/clear_costmaps")
+        clear_costmap()
+
+        # Reset Goal
+        rospy.loginfo("[NC] Re-try Goal!")
+        robotStatus.set_status('retry_goal')
+        pub_robot_status()
+    else:
+        # msg.status.status == 1,5,6,7 ...etc
+        str_msg = "[NC] Move_base Issue, status = " + str(msg.status.status)
+        rospy.logwarn(str_msg)
+        rospy.loginfo('[NC] Re-try Goal')
+        robotStatus.set_status('retry_goal')
+        pub_robot_status()
+    lock.release()
+    return
 
 
 def navi_center():
@@ -520,19 +631,20 @@ def navi_center():
     # TODO: Add safety feature
     # PMU, Power Management Unit Monitor
     rospy.Subscriber('/PMU/online', Bool, pmu_monitor)
+    # TODO: ADD /EMB
     # rospy.Subscriber('/emergentStop', Bool, emergentStop)
     # rospy.Subscriber('/base/lock', Bool, bumperHit)
 
     # Initialize position(default or by TopView_Tag), floor and status
-    status_client(robotStatus.status)
+    status_agent()
     # Loading the map and position accordingly.
     map_client(robotStatus.floor, service_dict)
 
     # TODO: Check the purpose of this service:
     # Register DWA_Planner Service
-    # rospy.wait_for_service("/move_base/DWAPlannerROS/set_parameters")
-    # client = dynamic_reconfigure.client.Client("/move_base/DWAPlannerROS", timeout=30,
-    #                                           config_callback=dynamic_reconfigure_cb)
+    rospy.wait_for_service("/move_base/DWAPlannerROS/set_parameters")
+    client = dynamic_reconfigure.client.Client("/move_base/DWAPlannerROS", timeout=30,
+                                               config_callback=dynamic_reconfigure_cb)
     rospy.loginfo("[NC] AMR Launched Success.")
 
     # 2. Planning Phase.
@@ -540,6 +652,7 @@ def navi_center():
     # Monitor and check the delivery task input. Reject or Update the mission accordingly.
     # If reject, simply feedback 'busy'. Otherwise, broadcast if through robot_status (by setting_robot_mission()).
     rospy.Subscriber('/hotelGoal', String, goal_monitor)
+    
     # 3. Task Execution Phase.
     while not rospy.is_shutdown():
         # Scene I, Got Mission with task_path.
@@ -554,7 +667,7 @@ def navi_center():
                 task_path = enter_station(task_path)
             # Case N. Move_base Moving
             else:
-                task_path = move_base_function(task_path)
+                task_path = move_base_agent(task_path, client)
             """ TODO: Crossing Map by EV
             # Case 3. Entering EV
             elif robotStatus.position[0:3] == 'EVW' and task_path[1] == 'EVin':
@@ -563,6 +676,8 @@ def navi_center():
         # Scene II, Got Mission and task_path is empty.
         elif robotStatus.mission is not None and not task_path:
             robotStatus.set_status('reached')
+            pub_robot_status()
+            status_agent()
             pub_robot_status()
             hotelGoalCB_Pub(robotStatus.mission)
         # No mission => Standby
