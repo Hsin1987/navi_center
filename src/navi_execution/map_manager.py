@@ -58,10 +58,12 @@ def map_client(floor, service_dict):
     changeNavMapPub.publish(nav_map_path)
     changeAMCLMapPub.publish(amcl_map_path)
     # Time for map loading
-    rospy.sleep(6.0)
+    rospy.sleep(3.0)
     init_pose = init_pose_on_map(floor, service_dict)
     init_pose.header.stamp = rospy.Time.now()
     initPosePub.publish(init_pose)
+    # Time for position setting.
+    rospy.sleep(6.0)
     return
 
 if __name__ == '__main__':

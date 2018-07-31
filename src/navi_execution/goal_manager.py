@@ -24,19 +24,23 @@ def loading_service_parameter():
     return yaml.load(params_raw)
 
 
-def set_tolerance(free_yaw_tolerance, xy_tol, client):
+def set_tolerance(free_yaw_tolerance, xy_tol):
     if free_yaw_tolerance:
         try:
+            rospy.wait_for_service("/move_base/DWAPlannerROS/set_parameters", 5.0)
+            client = dynamic_reconfigure.client.Client("/move_base/DWAPlannerROS", timeout=30)
             client.update_configuration({"yaw_goal_tolerance": 3.1416})
             client.update_configuration({"xy_goal_tolerance": xy_tol})
-        except:
-            rospy.logwarn("[nc_ros] setYawTolerance() got problem")
+        except (rospy.ServiceException, rospy.ROSException), e:
+            rospy.logerr("[NC] DWAPlannerROS Service call failed: %s" % (e,))
     else:
         try:
+            rospy.wait_for_service("/move_base/DWAPlannerROS/set_parameters", 5.0)
+            client = dynamic_reconfigure.client.Client("/move_base/DWAPlannerROS", timeout=30)
             client.update_configuration({"yaw_goal_tolerance": 0.1})
             client.update_configuration({"xy_goal_tolerance": xy_tol})
-        except:
-            rospy.logwarn("[nc_ros] setYawTolerance() got problem")
+        except (rospy.ServiceException, rospy.ROSException), e:
+            rospy.logerr("[NC] DWAPlannerROS Service call failed: %s" % (e,))
 
 
 def goal_agent(task_goal, service_setting):
@@ -108,13 +112,12 @@ def goal_agent(task_goal, service_setting):
         print("Sth wrong")
     return goal, wide_yaw_tolerance, xy_goal_tolerance
 
-"""
 
 if __name__ == '__main__':
     rospy.init_node('goal_manager')
-    rospy.wait_for_service("/move_base/DWAPlannerROS/set_parameters")
-    client = dynamic_reconfigure.client.Client("/move_base/DWAPlannerROS", timeout=30,
-                                               config_callback=dynamic_reconfigure_callback)
+    # rospy.wait_for_service("/move_base/DWAPlannerROS/set_parameters")
+    # client = dynamic_reconfigure.client.Client("/move_base/DWAPlannerROS", timeout=30,
+    #                                            config_callback=dynamic_reconfigure_callback)
     try:
         service_dict = loading_service_parameter()
         pose, yaw_tol, xy_tol = goal_agent('202', service_dict)
@@ -123,4 +126,3 @@ if __name__ == '__main__':
     except rospy.ROSInterruptException:
         pass
 
-"""

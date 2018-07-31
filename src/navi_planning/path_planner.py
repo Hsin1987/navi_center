@@ -10,6 +10,17 @@ import yaml
 Fruntion for planning a path for navigating to a position on the predefined list.
 
 """
+# Global Service parameter
+# service_dict = {}
+param_path = '/home/ubuntu/amr_ws/src/robot_unique_parameters/params/service_setting.yaml'
+
+
+# Loading the service parameter from robot_unique_parameter
+def loading_service_parameter():
+    f = open(param_path, 'r')
+    params_raw = f.read()
+    f.close()
+    return yaml.load(params_raw)
 
 
 class PathPlanner:
@@ -76,22 +87,18 @@ class PathPlanner:
                 self.pathDic[evw].append((1, evws))
                 self.pathDic[evws] = [(1, evw)]
 
-        print(self.pathDic)
-        print("DONE")
-
     def path_agent(self, start, destination):
         rospy.loginfo('[NC] Start Path Planner. From: ' + str(start) + ' to ' + str(destination) + '.')
-        planner_success = self.dijkstra(self.pathDic, start, destination)
+        planner_success = self.dijkstra(start, destination)
         if planner_success:
             rospy.loginfo('[NC] Path : ' + str(self.path))
-            # Remove the current position from the path list.
-            return self.path.pop(0)
+            return self.path[1:]
         else:
             rospy.logwarn('[NC] Path Planning Fail.')
             return []
 
     # Dijkstra Algorithm: find the shortest path
-    def dijkstra(self, pathdic, start, destination):
+    def dijkstra(self, start, destination):
         path_buffer = list()
         q, seen = [(0, start, path_buffer)], set()
         while q:
@@ -104,7 +111,7 @@ class PathPlanner:
                 if v1 == destination:
                     return True
 
-                for c, v2 in pathdic.get(v1, ()):
+                for c, v2 in self.pathDic.get(v1, ()):
                     if v2 not in seen:
                         path2 = self.path[0:]
                         # Push the value item onto the heap, maintaining the heap invariant.
@@ -113,6 +120,7 @@ class PathPlanner:
         return False
 
 if __name__ == '__main__':
+    service_dict = loading_service_parameter()
     path_planner = PathPlanner()
-    path_planner.setting()
+    path_planner.setting(service_dict['hotelGoals'])
     print(path_planner.path_agent('EVW4S', 'Station'))

@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-
 import rospy
 import yaml
 import json
@@ -10,6 +9,7 @@ from navi_execution.RobotStatus import RobotStatus
 from navi_planning.path_planner import PathPlanner
 from navi_execution.map_manager import map_client
 from navi_execution.goal_manager import set_tolerance, goal_agent
+from navi_comm.connection_test import pinger
 from rss.node_monitor import *
 from rss.weixin_alarm import WXAlarm
 
@@ -20,9 +20,9 @@ import dynamic_reconfigure.client
 import time
 import datetime
 import threading
+import re
 
-
-# File Location of the hotel relatived setting.
+# File Location of the hotel related setting.
 param_path = rospy.get_param("param_path",
                              '/home/ubuntu/amr_ws/src/robot_unique_parameters/params/service_setting.yaml')
 
@@ -42,7 +42,8 @@ lock = threading.Lock()
 # ------------------------ Auxiliary Function ---------------------------- #
 # Init the path_planner
 path_planner = PathPlanner()
-task_path = []
+task_path = None
+
 rss_notification = WXAlarm()
 battery_rss_timestamp = None
 charging_connected = False
@@ -58,6 +59,7 @@ robotStatusPub = rospy.Publisher('/amr_status_agent', String, queue_size=1, latc
 ttsPub = rospy.Publisher('/web/tts_request', String, queue_size=1)
 # navigation_execution relative topic publisher
 hotelGoalCB_Pub = rospy.Publisher('/hotelGoalCB', String, queue_size=1)
+hotelGoalReachPub = rospy.Publisher('/hotelGoalReached', String, queue_size=1)
 # Map & Position Init
 changeNavMapPub = rospy.Publisher('/map_server_nav/reload', String, queue_size=1)
 changeAMCLMapPub = rospy.Publisher('/map_server_amcl/reload', String, queue_size=1)
@@ -88,6 +90,31 @@ def clear_costmap():
         rospy.sleep(5.0)
 
 
+# WiFi Agent
+def wifi_connected():
+    check_list = ['robocall_server_ip', 'robocall_server_ip']
+
+    for target in check_list:
+        if not pinger(service_dict[target]):
+            msg = target + 'connection failed.'
+            rospy.logwarn('[NC] ' + msg )
+            ts = time.time()
+            st = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+            if rss_on:
+                rss_notification.sent(str(st) + " " + service_dict['AMR_ID'] + msg + " Request RSS. ", '@all')
+            return False
+    if not pinger(service_dict['hotel_public_ip']):
+        rospy.logwarn('[NC] Hotel public ip connection failed.')
+        msg = 'Hotel public ip connection failed'
+        rospy.logwarn('[NC] ' + msg)
+        ts = time.time()
+        st = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+        if rss_on:
+            rss_notification.sent(str(st) + " " + service_dict['AMR_ID'] + msg + " Request RSS. ", '@all')
+    return True
+
+
+# PMU Monitor
 def pmu_monitor(online):
     global pmu_online
     if not online.data:
@@ -111,50 +138,63 @@ def loading_service_parameter():
 
 def setting_robot_mission(hotel_goal):
     global robotStatus, task_path
-    task_path = path_planner.path_agent(robotStatus.position, robotStatus.mission)
+    # Check the hotel_goal? Is it in the list ?
+    input_confirm, hotel_goal = goal_correct(hotel_goal, service_dict)
+    if input_confirm:
+        robotStatus.mission = hotel_goal
+        pub_robot_status()
+        rospy.loginfo("[NC] Received hotelGoal: " + hotel_goal)
+    else:
+        hotelGoalCB_Pub.publish('busy')
+        rospy.loginfo('tts: 请输入正确的房号')
+        announce = unicode('请输入正确的房号', 'utf-8')
+        rospy.logwarn("[NC] Reject Task which is Not in the List.")
+        ttsPub.publish(announce)
+        robotStatus.mission = None
+        pub_robot_status()
+        return
+
+    planning_path = path_planner.path_agent(robotStatus.position, robotStatus.mission)
     # Check the result is not empty.
-    if not task_path:
+    if not planning_path:
         hotelGoalCB_Pub.publish('busy')
         rospy.loginfo('tts: 无法规划路径，请重新输入正确房号')
         announce = unicode('无法规划路径，请重新输入正确房号', 'utf-8')
-        rospy.logwarn("[NC] Path Planning Failed. Reject it And Ask for Correction.")
-        # Reset the robot status
-        robotStatus.mission_done()
-        # Reset the status
-        status_agent()
         ttsPub.publish(announce)
+        rospy.logwarn("[NC] Path Planning Failed. Reject it And Ask for Correction.")
+        robotStatus.mission = None
         pub_robot_status()
-    robotStatus.set_status('received_mission')
-    robotStatus.set_mission(hotel_goal)
-    pub_robot_status()
-    rospy.loginfo('[NC] Goal Monitor Confirm the hotelGoal.')
+        return
+
     # Confirmation of Receiving task.
     rospy.loginfo('[NC] Start the Mission.')
     announce = unicode('好的...感谢有机会为您服务', 'utf-8')
+    rospy.loginfo('tts: 好的...感谢有机会为您服务')
     ttsPub.publish(announce)
+    rospy.sleep(2.0)
+    task_path = planning_path
+    rospy.loginfo('[NC] Task Path : ' + str(task_path))
     return
 
 
 # Reject Hotel GOAL
 def reject_goal(hotel_goal):
-    if robotStatus.status is 'charging':
-        # Feedback UI, it can't take task now.
-        hotelGoalCB_Pub.publish('busy')
-        # tts info
-        rospy.loginfo('tts: 机器人电量过低.. 充电中，请稍候再试')
-        announce = unicode('机器人电量过低.. 充电中，请稍候再试', 'utf-8')
-        rospy.logwarn("[NC] Low Battery. Reject Task: " + str(hotel_goal))
-        ttsPub.publish(announce)
-        return
-    else:
-        hotelGoalCB_Pub.publish('busy')
-        rospy.logwarn("[NC] AMR is busy. Reject Task: " + str(hotel_goal))
-        return
+    global robotStatus
+    # Feedback UI, it can't take task now.
+    hotelGoalCB_Pub.publish('busy')
+    # tts info
+    rospy.loginfo('tts: 机器人电量过低.. 充电中，请稍候再试')
+    announce = unicode('机器人电量过低.. 充电中，请稍候再试', 'utf-8')
+    rospy.logwarn("[NC] Low Battery. Reject Task: " + str(hotel_goal))
+    ttsPub.publish(announce)
+    robotStatus.mission = None
+    pub_robot_status()
+    return
 
 
 def return_station(hotel_goal):
     global robotStatus
-    if hotel_goal == 'station' or hotel_goal in service_dict['stationCode']:
+    if hotel_goal == 'Station' or hotel_goal in service_dict['stationCode']:
         setting_robot_mission(hotel_goal)
         return
     else:
@@ -163,49 +203,68 @@ def return_station(hotel_goal):
         # tts info
         rospy.loginfo('tts: 机器人电量过低.. 请输入 0100 返回充电区')
         announce = unicode('机器人电量过低.. 请输入 0100 返回充电区', 'utf-8')
-        rospy.logwarn("[NC] Should Return Station. Reject Other Task.")
         ttsPub.publish(announce)
+        hotelGoalCB_Pub.publish('busy')
+        rospy.logwarn("[NC] Should Return Station. Reject Other Task.")
+        robotStatus.mission = None
+        pub_robot_status()
         return
+
+
+def goal_correct(task_input, service_dict):
+    predefine_list = service_dict['hotelGoals']
+
+    for raw, one_list in enumerate(predefine_list):
+        if task_input in one_list:
+            return True, task_input
+        elif task_input[1:] in service_dict['stationCode']:
+            return True, 'Station'
+        elif task_input[1:] in one_list:
+            return True, task_input[1:]
+        elif re.match("EVW[12345678]", task_input):
+            return True, task_input
+        elif re.match("EVW[12345678]S", task_input):
+            return True, task_input
+        else:
+            pass
+    return False, task_input
 
 
 # Monitor and check the delivery task input. Reject or Update the mission accordingly.
 # If reject, simply feedback 'busy'. Otherwise, broadcast if through robot_status (by setting_robot_mission()).
 def goal_monitor(received_goal):
-    global lock
+    global lock, robotStatus
     # lock the global variable: robotStatus
     lock.acquire()
     # TODO: Add Node Test & Connection Test, PASS: Proceed, Fail: Rejecct goal & Warning.
+
+    # Stage 0. With Mission, Reject
+    if robotStatus.mission is not None:
+        hotelGoalCB_Pub.publish('busy')
+        rospy.logwarn("[NC] AMR is busy. Reject Task: " + str(received_goal.data))
+        lock.release()
+        return
+
+    robotStatus.mission = "Received_Mission"
+    pub_robot_status()
     # Reaction Plan
     reaction = {
         'charging': reject_goal,
         'need_charging': return_station,
         'available': setting_robot_mission}
-    # Stage 1,
-    # Check the hotel_goal
-    # Is it in the list ?
-    if received_goal.data in service_dict['hotelGoals'][0]:
-        hotel_goal = received_goal.data
-        rospy.loginfo("[NC] Received hotelGoal: " + hotel_goal)
-    elif received_goal.data[1:5] in service_dict['stationCode']:
-        hotel_goal = 'Station'
-        rospy.loginfo("[NC] Received hotelGoal: " + hotel_goal)
-    else:
-        hotelGoalCB_Pub.publish('busy')
-        rospy.loginfo('tts: 请输入正确的房号')
-        announce = unicode('请输入正确的房号', 'utf-8')
-        rospy.logwarn("[NC] Reject Task which is Not in the List.")
-        ttsPub.publish(announce)
-        return False
-    # Stage 2, Action
+    # Stage 1.
     # Choose the reaction plan according to the current status.
     if robotStatus.status in reaction.keys():
-        function_to_call = reaction[robotStatus.status]
-        function_to_call(hotel_goal)
-    else:
-        reject_goal('busy')
 
-    lock.release()
-    return True
+        function_to_call = reaction[robotStatus.status]
+        function_to_call(received_goal.data)
+        lock.release()
+        return
+    else:
+        hotelGoalCB_Pub.publish('busy')
+        rospy.logwarn("[NC] Status Error. Reject Task: " + str(received_goal.data))
+        lock.release()
+        return
 
 
 # Check all the available node are online & alive.
@@ -234,19 +293,37 @@ def node_monitor():
 
 
 def system_health():
-    # TODO: Add WiFi connection Test
+    global lock, robotStatus
+    lock.acquire()
+    if wifi_connected():
+        rospy.loginfo('[NC] Init Process: Check WiFi Connection >>> PASS.')
+    # TODO: Need Recovery Monitor
+    """
+    else:
+
+        wifi_monitor_thread = threading.Timer()
+        wifi_monitor_thread.daemon = True
+        wifi_monitor_thread.start()
+        # Block the AMR Service
+        robotStatus.mission = 'WiFi_Fail'
+        robotStatus.set_status('rss_request')
+        pub_robot_status()
+    """
     # Wait 5s for all the launch process finished.
     rospy.sleep(5)
     # Successfully
     if node_monitor():
         # Change Status from 'init' to 'charging' or 'available'
         rospy.loginfo('[NC] Init Process: Check subsystem >>> PASS.')
+        lock.release()
         return
     # Boost Fail
     else:
         # Trigger the reboot
         rebootPub.publish(30.0)
-        rospy.sleep(120)
+        # TODO: Remove the #
+        # rospy.sleep(120)
+        lock.release()
         return
 
 
@@ -421,17 +498,21 @@ def depart_station(mission_path):
     ttsPub.publish(msg)
     rospy.sleep(3.0)
     departStationPub.publish(True)
-    # Release the global status.
-    robotStatus.set_status('moving')
+    if not mission_path[1:]:
+        robotStatus.set_status('reached')
+        rospy.loginfo('[NC] Path Finished, Goal Reached.')
+    else:
+
+        robotStatus.set_status('moving')
     pub_robot_status()
+    # Release the global status.
     lock.release()
     # Wait for Departure Complete
     while robotStatus.position != 'Station_out':
         rospy.sleep(1)
     _sub.unregister()
     rospy.loginfo('[NC] >>> Departure Finished.')
-    pub_robot_status()
-    return mission_path.pop(0)
+    return mission_path[1:]
 
 
 def depart_callback(success):
@@ -453,7 +534,7 @@ def depart_callback(success):
 
 
 def enter_station(mission_path):
-    global lock, robotStatus
+    global lock, robotStatus, task_path
     lock.acquire()
     if pmu_online:
         rospy.loginfo('[NC] AMR is going to enter the Station.')
@@ -474,13 +555,20 @@ def enter_station(mission_path):
         _sub.unregister()
         pub_robot_status()
         rospy.loginfo('[NC] >>> Entering Finished.')
+        if not mission_path[1:]:
+            robotStatus.set_status('reached')
+            rospy.loginfo('[NC] Path Finished, Goal Reached.')
         lock.release()
-        return mission_path.pop(0)
+        return mission_path[1:]
     else:
         rospy.logwarn('[NC] PMU_Offline, Abort Entering.')
-        lock.release()
+
         pub_robot_status()
-        return mission_path.pop(0)
+        if not mission_path[1:]:
+            robotStatus.set_status('reached')
+            rospy.loginfo('[NC] Path Finished, Goal Reached.')
+        lock.release()
+        return mission_path[1:]
 
 
 def entering_callback(success):
@@ -501,18 +589,21 @@ def entering_callback(success):
     return
 
 
-def move_base_agent(mission_path, client):
+def move_base_agent(mission_path):
     global lock, robotStatus
     lock.acquire()
+    # Subscribe the callback Topic
+    _sub = rospy.Subscriber('/move_base/result', MoveBaseActionResult, move_base_callback)
+
     current_goal = mission_path[0]
+    rospy.loginfo('[NC] Current Goal: ' + str(current_goal))
     # Loading the destination coordinate
     pose, yaw_tol, xy_tol = goal_agent(current_goal, service_dict)
     # Set Tolerance
-    set_tolerance(yaw_tol, xy_tol, client)
+    # TODO: TEST on real robot
+    # set_tolerance(yaw_tol, xy_tol)
 
-    rospy.loginfo('[NC] Sent a goal to Move_base.')
-    # Subscribe the callback Function
-    _sub = rospy.Subscriber('/move_base/result', MoveBaseActionResult, move_base_callback)
+    rospy.loginfo('[NC] Sent the goal to move_base.')
     # Publish the move_base goal.
     goalPub.publish(pose)
     # Release the global status.
@@ -522,12 +613,16 @@ def move_base_agent(mission_path, client):
     # Wait for Move_base's confirmation
     while True:
         if robotStatus.status == 'moving_reached':
-            robotStatus.set_position(current_goal)
-            robotStatus.set_status('moving')
+            if not mission_path[1:]:
+                robotStatus.set_status('reached')
+                rospy.loginfo('[NC] Path Finished, Goal Reached.')
+            else:
+                robotStatus.position = mission_path.pop(0)
+                robotStatus.set_status('moving')
             pub_robot_status()
             _sub.unregister()
             # Return the following path.
-            return mission_path.pop(0)
+            return mission_path
         elif robotStatus.status == 'retry_goal':
             robotStatus.set_status('moving')
             pub_robot_status()
@@ -600,7 +695,7 @@ def move_base_callback(msg):
 
 def navi_center():
     global robotStatus, service_dict, rss_notification, path_planner, task_path
-    rospy.loginfo("[NC] Navigation Center Launched.")
+    rospy.loginfo("[NC] System Launched.")
     # ====================================================== #
     # 0. Initiation Phase.
     # ====================================================== #
@@ -613,13 +708,14 @@ def navi_center():
     # ----------   Check System Boost up Successfully ------ #
     rospy.loginfo('[NC] Init Process: Check subsystem.')
     # Check all the necessary node are online and alive.
-    # TODO: Add WiFi Connection Test in system_health
-    # system_health()
+    # TODO: Enable system_health
+    """
+    system_health()
     # Start the "All time resource_monitor": Check node, connection & daily reboot
     resource_monitor_thread = threading.Thread(target=resource_monitor)
     resource_monitor_thread.daemon = True
     resource_monitor_thread.start()
-
+    """
     # ====================================================== #
     # 1. Init >>> Standby Phase
     # ====================================================== #
@@ -640,13 +736,20 @@ def navi_center():
     # Loading the map and position accordingly.
     map_client(robotStatus.floor, service_dict)
 
-    # TODO: Check the purpose of this service:
     # Register DWA_Planner Service
-    rospy.wait_for_service("/move_base/DWAPlannerROS/set_parameters")
-    client = dynamic_reconfigure.client.Client("/move_base/DWAPlannerROS", timeout=30,
-                                               config_callback=dynamic_reconfigure_cb)
-    rospy.loginfo("[NC] AMR Launched Success.")
 
+    # TODO: Check is here other way to replace wait_for
+    """
+    try:
+        rospy.wait_for_service("/move_base/DWAPlannerROS/set_parameters", 5.0)
+        client = dynamic_reconfigure.client.Client("/move_base/DWAPlannerROS", timeout=30,
+                                                   config_callback=dynamic_reconfigure_cb)
+        rospy.loginfo("[NC] AMR Launched Success.")
+    except (rospy.ServiceException, rospy.ROSException), e:
+        rospy.logerr("[NC] DWAPlannerROS Service call failed: %s" % (e,))
+        rospy.loginfo("[NC] AMR Launched Complete.")
+    """
+    rospy.loginfo("[NC] AMR Launched Success.")
     # 2. Planning Phase.
     # 2-1. Start the 'Goal_Monitor: 'Subscribe a /hotelGoal.
     # Monitor and check the delivery task input. Reject or Update the mission accordingly.
@@ -655,41 +758,42 @@ def navi_center():
     
     # 3. Task Execution Phase.
     while not rospy.is_shutdown():
+        print("In the loop.")
         # Scene I, Got Mission with task_path.
         if robotStatus.mission is not None and task_path:
             # ================== Main Task Loop ========================================== #
             # Receive task path, And Execute it orderly.
             # Case 1, Departure Station
-            if robotStatus.position == 'Station' and task_path[1] == 'Station_out':
+            if robotStatus.position == 'Station' and task_path[0] == 'Station_out':
                 task_path = depart_station(task_path)
             # Case 2. Entering EV
-            elif robotStatus.position == 'Station_out' and task_path[1] == 'Station':
+            elif robotStatus.position == 'Station_out' and task_path[0] == 'Station':
                 task_path = enter_station(task_path)
             # Case N. Move_base Moving
             else:
-                task_path = move_base_agent(task_path, client)
+                #task_path = move_base_agent(task_path, client)
+                task_path = move_base_agent(task_path)
             """ TODO: Crossing Map by EV
             # Case 3. Entering EV
             elif robotStatus.position[0:3] == 'EVW' and task_path[1] == 'EVin':
                 rospy.loginfo('[NC] AMR is going to Entering the EV.')
             """
         # Scene II, Got Mission and task_path is empty.
-        elif robotStatus.mission is not None and not task_path:
-            robotStatus.set_status('reached')
-            pub_robot_status()
+        elif robotStatus.mission is not None and robotStatus.status == "reached":
+            # Inform the User Interface, Mission Complete.
+            hotelGoalReachPub.publish(robotStatus.mission)
+            # Reset Mission
+            robotStatus.mission_done()
+            # Reset Status
             status_agent()
             pub_robot_status()
-            hotelGoalCB_Pub(robotStatus.mission)
         # No mission => Standby
         else:
-            rospy.sleep(1.0)
+            rospy.sleep(2.0)
 
     # R. Recovery Mode.
 
     # I. Issue Notification Mode.
-
-
-
 
 if __name__ == '__main__':
     try:

@@ -82,7 +82,7 @@ class RobotStatus:
     # ===== Setting Mission ===== #
     def mission_done(self):
         global robot_status
-        robot_status.mission = None
+        self.mission = None
 
     # ===== Setting Mission ===== #
     def set_position(self, position_input, hotel_goals):

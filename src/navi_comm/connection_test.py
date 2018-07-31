@@ -5,6 +5,8 @@ reference: sourceperl/th_pinger.py (https://gist.github.com/sourceperl/10288663)
 import subprocess
 import re
 
+ip_list = ['202.108.22.5', '192.168.30.132']
+
 
 def pinger(ip):
     # ping it
@@ -14,15 +16,14 @@ def pinger(ip):
                               stdout=subprocess.PIPE)
     # save ping stdout
     p_ping_out = p_ping.communicate()[0]
-
     if p_ping.wait() == 0:
         # rtt min/avg/max/mdev = 22.293/22.293/22.293/0.000 ms
         search = re.search(r'rtt min/avg/max/mdev = (.*)/(.*)/(.*)/(.*) ms',
                          p_ping_out, re.M|re.I)
         # return /max, /mdev
-        return search.group(3), search.group(4)
+        # return search.group(3), search.group(4)
+        return True
     else:
-        return "Pinger Crash."
-
+        return False
 
 
