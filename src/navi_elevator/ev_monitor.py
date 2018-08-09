@@ -2,7 +2,7 @@
 """
 1. http://www.theconstructsim.com/read-laserscan-data/
 
-2. 用Python打造无人驾驶车-激光雷达数据(1)
+2. Python
     https://zhuanlan.zhihu.com/p/27819816
 3. laser_geometry
     http://wiki.ros.org/laser_geometry#Python_Usage
@@ -19,6 +19,7 @@ from sensor_msgs.msg import PointCloud, PointCloud2, LaserScan
 import laser_geometry.laser_geometry as lg
 import math
 import numpy as np
+
 
 
 
@@ -71,37 +72,19 @@ def gen_to_numpy(gen):
 # transformLaserScanToPointCloud
 def scan_cb(msg):
     # convert the message of type LaserScan to a PointCloud2
-    pc2_msg = lp.projectLaser(msg)
-    pc_msg = lg.transformLaserScanToPointCloud(msg)
-    # now we can do something with the PointCloud2 for example:
-    # publish it
-    pc_pub.publish(pc_msg)
-    pc2_pub.publish(pc2_msg)
+    points_list = []
+    for point in msg.points:
+        points_list.append([point.x, point.y, point.z])
 
 
-    # convert it to a generator of the individual points
-    point_generator = pc2.read_points(pc2_msg)
 
-
-    array = gen_to_numpy(point_generator)
-    print(array)
-
-    #print(counter)
-    """
+    array = np.asarray(points_list)
     ev = [np.where([np.logical_and((x_min <= point[0] <= x_max), (y_min <= point[1] <= y_max)) for point in array])]
     print(ev)
 
 
 
-    # we can access a generator in a loop
-    sum = 0.0
-    num = 0
-    for point in point_generator:
-        if not math.isnan(point[2]):
-            sum += point[2]
-            num += 1
-    # we can calculate the average z value for example
-    print(str(sum / num))
+
 
     # or a list of the individual points which is less efficient
     point_list = pc2.read_points_list(pc2_msg)
@@ -110,7 +93,7 @@ def scan_cb(msg):
     # we can access the elements by name, the generator does not yield namedtuples!
     # if we convert it to a list and back this possibility is lost
     print(point_list[len(point_list) / 2].x)
-    """
 
-rospy.Subscriber("/scan_rear", LaserScan, scan_cb, queue_size=1)
+
+rospy.Subscriber("/assemble_scans_client/output", PointCloud, scan_cb, queue_size=1)
 rospy.spin()

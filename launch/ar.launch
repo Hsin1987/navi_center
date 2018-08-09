@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- Parameters -->
+    <arg name="is_simulation" default="true"/>
+    <arg name="is_multi_lidar" default="true"/>
+
+    <arg name="is_using_amclaux_apriltag" default="true"/>
+    <arg name="is_using_docking_nav" default="true"/>
+
+    <arg name="is_using_navi_center" default="false"/>
+
+
+    <!-- ar base and amcl (without IMU) -->
+    <include file="$(find ar)/launch/ar_amcl.launch" >
+        <arg name="is_simulation" value="$(arg is_simulation)" />
+        <arg name="is_multi_lidar" value="$(arg is_multi_lidar)" />
+    </include>
+
+    <!-- b2b, launch proactive human detection packages ..etc -->
+    <include file="$(find ar)/launch/b2b.launch" />
+
+    <!-- launch fuzzy_goal_server -->
+<!--
+    <include file="$(find fuzzy_goal)/launch/fuzzy_goal_server_amr.launch" >
+        <arg name="laser_fram_id" value="base_link" if="$(arg is_multi_lidar)" />
+    </include>
+-->
+
+    <!-- amcl_aux_localization -->
+    <group if="$(arg is_using_amclaux_apriltag)">
+        <include file="$(find amcl_aux_localization)/launch/amcl_aux_localization_all.launch" />
+    </group>
+
+    <!-- docking_navigation -->
+    <group if="$(arg is_using_docking_nav)">
+        <include file="$(find docking_navigation)/launch/docking_navigation_all.launch" />
+    </group>
+
+    <!-- navi_center -->
+    <group if="$(arg is_using_navi_center)">
+        <include file="$(find elevator)/launch/elevator.launch" />
+    </group>
+
+</launch>

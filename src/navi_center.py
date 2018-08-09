@@ -9,6 +9,7 @@ from navi_execution.RobotStatus import RobotStatus
 from navi_planning.path_planner import PathPlanner
 from navi_execution.map_manager import map_client
 from navi_execution.goal_manager import set_tolerance, goal_agent
+from navi_execution.basic_function import loading_service_parameter
 from navi_comm.connection_test import pinger
 from rss.node_monitor import *
 from rss.weixin_alarm import WXAlarm
@@ -21,10 +22,6 @@ import time
 import datetime
 import threading
 import re
-
-# File Location of the hotel related setting.
-param_path = rospy.get_param("param_path",
-                             '/home/ubuntu/amr_ws/src/robot_unique_parameters/params/service_setting.yaml')
 
 battery_capacity_threshold = rospy.get_param("battery_capacity_threshold", 20.0)
 
@@ -126,14 +123,6 @@ def pmu_monitor(online):
         if rss_on:
             rss_notification.sent(str(st) + " " + service_dict['AMR_ID'] + " : PMU offline! Request RSS. ", '@all')
     return
-
-
-# Loading the service parameter from robot_unique_parameter
-def loading_service_parameter():
-    f = open(param_path, 'r')
-    params_raw = f.read()
-    f.close()
-    return yaml.load(params_raw)
 
 
 def setting_robot_mission(hotel_goal):

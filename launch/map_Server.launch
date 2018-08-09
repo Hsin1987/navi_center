@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- Parameters -->
+    <arg name="is_multi_lidar" default="true"/>
+    <arg name="is_simulation" default="false"/>
+    <!-- Initial pose -->
+    <arg name="initial_pose_x"  default="23.0339479288"/>
+    <arg name="initial_pose_y"  default="22.3645514776"/>
+    <arg name="initial_pose_a"  default="0.0"/>
+
+    <!-- Map servers -->
+    <group unless="$(arg is_simulation)">
+        <!--  map server for amcl  -->
+        <!-- node name="map_server_amcl" pkg="map_server" type="map_server" args="$(find ar)/map/map_amcl.yaml" -->
+        <node name="map_server_amcl" pkg="map_server" type="map_server" args="$(find navi_center)/map/map1_amcl.yaml">
+            <remap from="map" to="map_amcl"/>
+        </node>
+        <!--  map server for move_base  -->
+        <!-- node name="map_server_nav" pkg="map_server" type="map_server" args="$(find ar)/map/map_nav.yaml"/ -->
+        <node name="map_server_nav" pkg="map_server" type="map_server" args="$(find navi_center)/map/map1_nav.yaml"/>
+    </group>
+
+   
+</launch>

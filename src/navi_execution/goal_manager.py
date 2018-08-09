@@ -3,7 +3,7 @@ import rospy
 import yaml
 from geometry_msgs.msg import PoseStamped
 import dynamic_reconfigure.client
-
+from basic_function import loading_service_parameter
 # Global Service parameter
 # service_dict = {}
 param_path = '/home/ubuntu/amr_ws/src/robot_unique_parameters/params/service_setting.yaml'
@@ -14,14 +14,6 @@ goalPub = rospy.Publisher('/move_base_simple/goal', PoseStamped, queue_size=1)
 def dynamic_reconfigure_callback(config):
     print(config)
     rospy.loginfo("[nc_ros] dynamicReconfigureCallback() is called")
-
-
-# Loading the service parameter from robot_unique_parameter
-def loading_service_parameter():
-    f = open(param_path, 'r')
-    params_raw = f.read()
-    f.close()
-    return yaml.load(params_raw)
 
 
 def set_tolerance(free_yaw_tolerance, xy_tol):

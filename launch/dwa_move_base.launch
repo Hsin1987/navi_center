@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+
+<launch>
+    <!-- Parameters -->
+    <arg name="is_multi_lidar" default="false"/>
+
+
+    <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen" clear_params="true">
+        <param name="base_global_planner" value="navfn/NavfnROS" />
+        <!-- <param name="base_global_planner" value="global_planner/GlobalPlanner" /-->
+        <param name="planner_frequency"  value="0.2" />
+
+        <!-- param name="base_local_planner" value="base_local_planner/TrajectoryPlannerROS" / -->
+        <param name="base_local_planner" value="dwa_local_planner/DWAPlannerROS" />
+        <!-- param name="base_local_planner" value="teb_local_planner/TebLocalPlannerROS" / -->
+
+
+
+        <!-- Single-lidar -->
+        <rosparam file="$(find ar)/launch/params/move_base/global_costmap_params.yaml" command="load" ns="global_costmap" unless="$(arg is_multi_lidar)" />
+        <rosparam file="$(find ar)/launch/params/move_base/local_costmap_params.yaml" command="load" ns="local_costmap" unless="$(arg is_multi_lidar)"/>
+
+        <!-- Multi-lidar -->
+        <rosparam file="$(find ar)/launch/params/move_base/global_costmap_params_multi_lidar.yaml" command="load" ns="global_costmap" if="$(arg is_multi_lidar)" />
+        <rosparam file="$(find ar)/launch/params/move_base/local_costmap_params_multi_lidar.yaml" command="load" ns="local_costmap" if="$(arg is_multi_lidar)"/>
+
+
+
+
+        <rosparam file="$(find ar)/launch/params/move_base/dwa_base_local_planner_params.yaml" command="load" />
+        <!-- rosparam file="$(find ar)/launch/params/move_base/teb_local_planner_params.yaml" command="load" / -->
+
+        <remap from="/cmd_vel" to="/move_base/cmd_vel" />
+<!--
+        <remap from="/cmd_vel" to="/andbot/cmd_vel" />
+        <remap from="/odom" to="/Adamgo_Base/odom"/>
+-->
+    </node>
+</launch>

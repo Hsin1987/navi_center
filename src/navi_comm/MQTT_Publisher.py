@@ -4,7 +4,6 @@ import rospy
 from std_msgs.msg import *
 
 
-
 class publish:
     def __init__(self, topic):
         self.mqttc = mqtt.Client("python_pub")
