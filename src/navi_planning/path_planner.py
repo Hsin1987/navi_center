@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import rospy
+import re
 from collections import defaultdict
 from heapq import heappop, heappush
 
@@ -92,7 +93,11 @@ class PathPlanner:
         planner_success = self.dijkstra(start, destination)
         if planner_success:
             rospy.loginfo('[NC] Path : ' + str(self.path))
-            return self.path[1:]
+            #
+            if re.match("EVW[12345678]", self.path[0]) or self.path[0] == 'Station_out':
+                return self.path
+            else:
+                return self.path[1:]
         else:
             rospy.logwarn('[NC] Path Planning Fail.')
             return []
@@ -123,4 +128,4 @@ if __name__ == '__main__':
     service_dict = loading_service_parameter()
     path_planner = PathPlanner()
     path_planner.setting(service_dict['hotelGoals'])
-    print(path_planner.path_agent('EVW4S', 'Station'))
+    print(path_planner.path_agent('Station_out', 'Station'))
