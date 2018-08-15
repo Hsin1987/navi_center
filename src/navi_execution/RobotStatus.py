@@ -34,8 +34,8 @@ contain in the specific status.
 """
 
 robot_status = ('init',   'charging',  'need_charging', 'available',   'received_mission',
-                'moving', 'moving_reached', 'retry_goal'
-                'waitingEV', 'waitingEV_C',   'checkingEV',  'enteringEV',
+                'moving', 'node_reached', 'retry',
+                'waitEV', 'waitEV_C',   'checkingEV',  'enteringEV',
                 'inEV',   'inEV_C',    'inEV_R',        'alightingEV', 'reached',
                 'rss_request', 'rss_mode')
 
@@ -56,8 +56,16 @@ class RobotStatus:
         self.ts_start = None
         # Battery Capacity
         self.capacity = 100.0
-        # Aborted Task Counter: [move_base, ev_safetyCheck, ev_c_Check]
-        self.abortCount = [0, 0, 0]
+        # Aborted Task Counter:
+        self.abortCount = {
+            "move_base": 0,
+            "ev_check": 1,
+            'entering': 1,
+        }
+        # Aborted Task Counter:
+        self.error = {
+            "ev_no_response": 0
+        }
 
     # ===== Status Setting ===== #
     def set_status(self, status_input):

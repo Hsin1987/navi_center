@@ -21,28 +21,20 @@ rospy.on_shutdown(cleanup_node)
 markers = rviz_tools.RvizMarkers('/map', 'visualization_marker')
 pc_pub = rospy.Publisher("point", PointStamped, queue_size=1)
 
-rospy.get_param('/use_sim_time', True)
-# listener = tf.TransformListener()
-
-
+listener = tf.TransformListener()
 
 def callback(data):
-    """
     try:
-        #listener.waitForTransform('laser_rear', 'map', rospy.Time(), rospy.Duration(100.0))
+        listener.waitForTransform('laser', 'map', rospy.Time(), rospy.Duration(1))
 
-        #(trans, rot) = listener.lookupTransform('laser_rear', 'map', rospy.Time())
-
+        (trans, rot) = listener.lookupTransform('laser_rear', 'map', rospy.Time())
 
     except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
         pass
-    """
-    rot = [0.0, 0.0, 0.354324581624, 0.935122500455]
-    euler = tf.transformations.euler_from_quaternion(rot)
-    trans = [18.4, 16.3, 0]
+
 
     frame = np.zeros((500, 500, 3), np.uint8)
-    angle = data.angle_min + euler[2] - 80
+    angle = data.angle_min + euler[2]
     counter = 0
     for r in data.ranges:
         counter +=1
@@ -73,7 +65,7 @@ def callback(data):
 
 def laser_listener():
     rospy.init_node('laser_listener', anonymous=True)
-    rospy.Subscriber("/scan_rear", LaserScan, callback)
+    rospy.Subscriber("/scan", LaserScan, callback)
     rospy.spin()
 
 if __name__ == '__main__':

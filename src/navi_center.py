@@ -4,15 +4,17 @@ import rospy
 import yaml
 import json
 import std_srvs.srv
-from std_msgs.msg import String, Float32, Float64, Bool
+from std_msgs.msg import Empty, String, Float32, Float64, Bool
 from navi_execution.RobotStatus import RobotStatus
 from navi_planning.path_planner import PathPlanner
 from navi_execution.map_manager import map_client
 from navi_execution.goal_manager import set_tolerance, goal_agent
-from navi_execution.basic_function import loading_service_parameter
+from navi_execution.basic_function import loading_service_parameter, loading_hotel_goal
+from navi_infra.ev_manager import ev_agent_call, inform_ev_done, ev_agent_reach, check_elevator, release_ev
+from navi_infra.ev_manager import entering_elevator, alighting_elevator
 from navi_comm.connection_test import pinger
 from rss.node_monitor import *
-from rss.weixin_alarm import WXAlarm
+from rss.weixin_alarm import WXAlarm, sent_rss_notification
 
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped
 from move_base_msgs.msg import MoveBaseActionResult
@@ -27,10 +29,13 @@ battery_capacity_threshold = rospy.get_param("battery_capacity_threshold", 20.0)
 
 # Subsystem Switch
 rss_on = rospy.get_param("rss_on", False)
+resource_check_on = rospy.get_param("resource_check_on", False)
+alight_mb_on = rospy.get_param("alight_mb_on", True)
 
 
 # Global Service parameter
 service_dict = {}
+goal_dict = {}
 robotStatus = None
 
 # Status Locker
@@ -66,6 +71,15 @@ initPosePub = rospy.Publisher('/initialpose', PoseWithCovarianceStamped, queue_s
 # A1. Station Type
 enterStationPub = rospy.Publisher('/enterStation', Bool, queue_size=1)
 departStationPub = rospy.Publisher('/departStation', Bool, queue_size=1)
+
+# B1. EV Type
+checkEVPub = rospy.Publisher('/checkEV', Empty, queue_size=1)
+doorReleasePub = rospy.Publisher('/doorRelease', Empty, queue_size=1)
+enterEVPub = rospy.Publisher('/enterEV', String, queue_size=1)
+alightEVPub = rospy.Publisher('/alightEV', String, queue_size=1)
+
+# to do
+currentFloorPub = rospy.Publisher('/currentFloor', String, queue_size=1, latch=True)
 
 # M1. Move_Base Goal
 goalPub = rospy.Publisher('/move_base_simple/goal', PoseStamped, queue_size=1)
@@ -363,8 +377,8 @@ def pub_robot_status():
         # Aborted sub-task Counter
         'abortCount': robotStatus.abortCount
               }
-    status_json = json.dumps(status)
-    robotStatusPub.publish(status_json)
+    # status_json = json.dumps(status)
+    robotStatusPub.publish(str(status))
     return
 
 
@@ -394,7 +408,7 @@ def resource_monitor():
         # Critical Resource Monitor: Nodes, connection
         # TODO: Add WiFi Connection Monitor
         else:
-            if rss_on:
+            if resource_check_on:
                 # Check the node_list_1
                 fine, result = checkNodeExistence(service_dict['node_list_1'])
                 if not fine:
@@ -427,7 +441,7 @@ def status_agent():
         # Default: Lobby
         if charging_connected:
             # Update the position
-            robotStatus.set_position('Station', service_dict['hotelGoals'])
+            robotStatus.position = 'Station'
             # Update the current floor
             robotStatus.floor = service_dict['station_floor']
             if robotStatus.capacity >= battery_capacity_threshold:
@@ -445,10 +459,10 @@ def status_agent():
             # Subscribe the tag_topic, then setting the robot.position
             if robotStatus.capacity >= battery_capacity_threshold:
                 robotStatus.set_status('available')
-                robotStatus.set_position('Lobby', service_dict['hotelGoals'])
+                robotStatus.position = 'Lobby'
             else:
                 robotStatus.set_status('need_charging')
-                robotStatus.set_position('Lobby', service_dict['hotelGoals'])
+                robotStatus.position = 'Lobby'
         pub_robot_status()
         # Release the global variable.
         lock.release()
@@ -456,7 +470,7 @@ def status_agent():
     # Reset the status, not position.
     else:
         if charging_connected:
-            robotStatus.set_position('Station', service_dict['hotelGoals'])
+            robotStatus.position = 'Station'
             if robotStatus.capacity >= battery_capacity_threshold:
                 robotStatus.set_status('available')
             else:
@@ -508,16 +522,12 @@ def depart_callback(success):
     global lock, robotStatus
     lock.acquire()
     if success:
-        robotStatus.set_position('Station_out')
+        robotStatus.position = 'Station_out'
     else:
-        robotStatus.set_position('Station_out')
+        robotStatus.position = 'Station_out'
         msg = '[NC] Departure Station Return False.'
         rospy.logwarn(msg)
-        ts = time.time()
-        st = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
-        if rss_on:
-            rss_notification.sent(
-                str(st) + " " + service_dict['AMR_ID'] + msg, '@all')
+        sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
     lock.release()
     return
 
@@ -564,32 +574,27 @@ def entering_callback(success):
     global lock, robotStatus
     lock.acquire()
     if success:
-        robotStatus.set_position('Station')
+        robotStatus.position = 'Station'
     else:
-        robotStatus.set_position('Station')
+        robotStatus.position = 'Station'
         msg = '[NC] Entering Station Return False.'
         rospy.logwarn(msg)
-        ts = time.time()
-        st = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
-        if rss_on:
-            rss_notification.sent(
-                str(st) + " " + service_dict['AMR_ID'] + msg, '@all')
+        sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
     lock.release()
     return
 
 
-def move_base_agent(mission_path):
+def move_base_agent(mission_path, time_limit):
     global lock, robotStatus
     lock.acquire()
     # Subscribe the callback Topic
     _sub = rospy.Subscriber('/move_base/result', MoveBaseActionResult, move_base_callback)
-
     current_goal = mission_path[0]
     rospy.loginfo('[NC] Current Goal: ' + str(current_goal))
     # Loading the destination coordinate
-    pose, yaw_tol, xy_tol = goal_agent(current_goal, service_dict)
+    pose, yaw_tol, xy_tol = goal_agent(current_goal, goal_dict)
     # Set Tolerance
-    # TODO: TEST on real robot
+    # TODO: set_tolerance TEST on real robot
     # set_tolerance(yaw_tol, xy_tol)
 
     rospy.loginfo('[NC] Sent the goal to move_base.')
@@ -600,26 +605,30 @@ def move_base_agent(mission_path):
     pub_robot_status()
     lock.release()
     # Wait for Move_base's confirmation
+    counter = 0
     while True:
-        if robotStatus.status == 'moving_reached':
-            if not mission_path[1:]:
-                robotStatus.set_status('reached')
-                rospy.loginfo('[NC] Path Finished, Goal Reached.')
-            else:
-                robotStatus.position = mission_path.pop(0)
-                robotStatus.set_status('moving')
+        if robotStatus.status == 'node_reached':
+            robotStatus.position = mission_path.pop(0)
+            if robotStatus.position[0:3] == 'EVW' and task_path[0] == 'EVin':
+                robotStatus.set_status('waitEV')
             pub_robot_status()
             _sub.unregister()
             # Return the following path.
-            return mission_path
-        elif robotStatus.status == 'retry_goal':
+            return mission_path, True
+        elif robotStatus.status == 'retry':
             robotStatus.set_status('moving')
+            rospy.loginfo('[NC] Assign move_base goal again.')
             pub_robot_status()
+            goalPub.publish(pose)
+            robotStatus.abortCount['move_base'] += 1
+            counter += 1
+        elif counter > time_limit:
+            rospy.logwarn('[NC] move_base timeout.')
             _sub.unregister()
-            # Return the same path
-            return mission_path
+            return mission_path, False
         else:
-            rospy.sleep(1.0)
+            rospy.sleep(0.1)
+            counter += 1
 
 
 def move_base_callback(msg):
@@ -627,8 +636,7 @@ def move_base_callback(msg):
     lock.acquire()
     if msg.status.status == 3:
         # node goal reached
-        robotStatus.set_status('moving_reached')
-        pub_robot_status()
+        robotStatus.set_status('node_reached')
 
     elif msg.status.status == 2:
         # move_base goal preempted
@@ -637,15 +645,16 @@ def move_base_callback(msg):
     elif msg.status.status == 4:
         # node goal aborted
         rospy.logwarn("[NC] Move_base aborted")
-        robotStatus.abortCount[0] += 1
+        robotStatus.abortCount['move_base'] += 1
+        # Reset Goal
+        rospy.loginfo("[NC] Retry Goal!")
+        robotStatus.set_status('retry')
+
         # RSS Notification when aborting 5 times
-        if robotStatus.abortCount[0] % 5 == 0:
-            ts = time.time()
-            st = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
-            if rss_on:
-                rss_notification.sent(str(st) + " "
-                                      + service_dict['AMR_ID']
-                                      + " : Move_base aborted 5 times. Request RSS attention. ", '@all')
+        if robotStatus.abortCount['move_base'] % 10 == 0:
+            msg = '[NC] AMR is blocked. Move_base aborted 10 times. Request RSS attention.'
+            rospy.logwarn(msg)
+            sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
 
             # TODO: PHONE Pushing & Logging Thread
             """
@@ -664,32 +673,29 @@ def move_base_callback(msg):
         ttsPub.publish(tts_msg)
 
         # Clear costmap
-        rospy.loginfo("[NC] call /move_base/clear_costmaps")
+        rospy.loginfo("[NC] Call /move_base/clear_costmaps")
         clear_costmap()
 
-        # Reset Goal
-        rospy.loginfo("[NC] Re-try Goal!")
-        robotStatus.set_status('retry_goal')
-        pub_robot_status()
     else:
         # msg.status.status == 1,5,6,7 ...etc
         str_msg = "[NC] Move_base Issue, status = " + str(msg.status.status)
         rospy.logwarn(str_msg)
-        rospy.loginfo('[NC] Re-try Goal')
-        robotStatus.set_status('retry_goal')
-        pub_robot_status()
+        sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], str_msg)
+        robotStatus.set_status('retry')
+
     lock.release()
     return
 
 
 def navi_center():
-    global robotStatus, service_dict, rss_notification, path_planner, task_path
+    global robotStatus, service_dict, rss_notification, path_planner, task_path, goal_dict
     rospy.loginfo("[NC] System Launched.")
     # ====================================================== #
     # 0. Initiation Phase.
     # ====================================================== #
     # ----------   Service Parameters Loading  ------------- #
     service_dict = loading_service_parameter()
+    goal_dict = loading_hotel_goal()
     rss_notification.setting(service_dict)
     path_planner.setting(service_dict['hotelGoals'])
     # ----------   RobotStatus Init ------------------------ #
@@ -698,13 +704,13 @@ def navi_center():
     rospy.loginfo('[NC] Init Process: Check subsystem.')
     # Check all the necessary node are online and alive.
     # TODO: Enable system_health
-    """
-    system_health()
-    # Start the "All time resource_monitor": Check node, connection & daily reboot
-    resource_monitor_thread = threading.Thread(target=resource_monitor)
-    resource_monitor_thread.daemon = True
-    resource_monitor_thread.start()
-    """
+    if resource_check_on:
+        system_health()
+        # Start the "All time resource_monitor": Check node, connection & daily reboot
+        resource_monitor_thread = threading.Thread(target=resource_monitor)
+        resource_monitor_thread.daemon = True
+        resource_monitor_thread.start()
+
     # ====================================================== #
     # 1. Init >>> Standby Phase
     # ====================================================== #
@@ -716,7 +722,7 @@ def navi_center():
     # TODO: Add safety feature
     # PMU, Power Management Unit Monitor
     rospy.Subscriber('/PMU/online', Bool, pmu_monitor)
-    # TODO: ADD /EMB
+    # TODO: ADD /EMB /Station
     # rospy.Subscriber('/emergentStop', Bool, emergentStop)
     # rospy.Subscriber('/base/lock', Bool, bumperHit)
 
@@ -747,26 +753,205 @@ def navi_center():
     
     # 3. Task Execution Phase.
     while not rospy.is_shutdown():
+        # TODO: Remove this.
         print("In the loop.")
         # Scene I, Got Mission with task_path.
         if robotStatus.mission is not None and task_path:
             # ================== Main Task Loop ========================================== #
+            rospy.loginfo('[NC] Task Path: ' + str(task_path))
+            rospy.loginfo('[NC] Current Position: ' + str(robotStatus.position))
             # Receive task path, And Execute it orderly.
             # Case 1, Departure Station
             if robotStatus.position == 'Station' and task_path[0] == 'Station_out':
                 task_path = depart_station(task_path)
-            # Case 2. Entering EV
+            # Case 2. Entering Station
             elif robotStatus.position == 'Station_out' and task_path[0] == 'Station':
                 task_path = enter_station(task_path)
-            # Case N. Move_base Moving
-            else:
-                #task_path = move_base_agent(task_path, client)
-                task_path = move_base_agent(task_path)
-            """ TODO: Crossing Map by EV
             # Case 3. Entering EV
-            elif robotStatus.position[0:3] == 'EVW' and task_path[1] == 'EVin':
-                rospy.loginfo('[NC] AMR is going to Entering the EV.')
-            """
+            # elif robotStatus.position[0:3] == 'EVW' and task_path[1] == 'EVin':
+            elif robotStatus.status is 'waitEV':
+                # AMR_ID, status, tid, current_floor, target_floor
+                tid = str(round(time.time(), 2))
+                current_floor = robotStatus.position[3:] + 'F'
+                target_floor = task_path[1][3:] + 'F'
+                rospy.loginfo('[NC] Call the EV to ' + current_floor)
+                # 3-1. Request EV
+                ev_request_confirm = ev_agent_call(service_dict['AMR_ID'], tid, current_floor, target_floor)
+                if ev_request_confirm:
+                    robotStatus.set_status('waitEV_C')
+                    pub_robot_status()
+                    # 3-2. Wait for EV reach
+                    reach_result = ev_agent_reach(current_floor, service_dict['ev_timeout'])
+                    if reach_result is 'correct':
+                        rospy.loginfo('[NC] EV reached: '+str(current_floor))
+                        robotStatus.set_status('checkingEV')
+                        pub_robot_status()
+                        # 3-3. Check the EV Space
+                        safety_check_result = check_elevator(checkEVPub)
+                        if safety_check_result == 'pass':
+                            robotStatus.set_status('enteringEV')
+                            pub_robot_status()
+                            pass
+                        elif safety_check_result == 'not pass':
+                            # Release the EV
+                            release_ev(doorReleasePub, ttsPub)
+                            # Wait for 15s and recall
+                            robotStatus.set_status('waitEV')
+                            pub_robot_status()
+                            rospy.sleep(15.0)
+                            robotStatus.abortCount['ev_check'] += 1
+                            pass
+                        elif safety_check_result == 'yield':
+                            # Release the EV
+                            release_ev(doorReleasePub, ttsPub)
+                            # Try the Yield Position
+                            task_path.insert(0, robotStatus.position)
+                            task_path.insert(0, robotStatus.position+'S')
+                            robotStatus.set_status('moving')
+                            pub_robot_status()
+                            robotStatus.abortCount['ev_check'] += 1
+                            pass
+                    # 3-2. Wait for EV reach >>> Timeout
+                    elif reach_result == 'timeout':
+                        msg = '[NC] Call EV >>> No response >>> Timeout.'
+                        rospy.logwarn(msg)
+                        sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
+                        pass
+                    elif reach_result == 'wrong_floor':
+                        msg = '[NC] Call EV >>> Floor Mismatch.'
+                        rospy.logwarn(msg)
+                        sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
+                        pass
+                else:
+                    # TODO: Add action to EV request >>> No response. More than three times.
+                    msg = '[NC] Unable to sent request to EV.'
+                    rospy.logwarn(msg)
+                    sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
+                    robotStatus.error['ev_no_response'] += 1
+            elif robotStatus.status == 'enteringEV':
+                # done / aborted / timeout(1200)
+                inform_ev = None
+
+                counter = 0
+                entering_result = entering_elevator(current_floor, enterEVPub)
+                if entering_result == 'done':
+                    robotStatus.position = task_path.pop(0)
+                    robotStatus.set_status('inEV')
+                    pub_robot_status()
+                    rospy.loginfo('[NC] >>> Entering EV Done >>> ')
+                    rospy.loginfo('[NC] Current Position: ' + str(robotStatus.position))
+                    # Try to Inform the EV.
+                    inform_ev = None
+                    while not inform_ev:
+                        if counter < 3:
+                            inform_ev = inform_ev_done(service_dict['AMR_ID'], tid, current_floor, target_floor)
+                            counter += 1
+                            rospy.loginfo('[NC] Call the EV to ' + str(target_floor))
+                            robotStatus.set_status('inEV_C')
+                            pub_robot_status()
+                        else:
+                            msg = '[NC] Unable to inform EV that AMR has done entering.'
+                            rospy.logwarn(msg)
+                            sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
+                            robotStatus.error['ev_no_response'] += 1
+                            break
+
+                elif entering_result == 'abort':
+                    task_path.insert(0, robotStatus.position)
+                    robotStatus.set_status('moving')
+                    pub_robot_status()
+                    robotStatus.abortCount['entering'] += 1
+                    pass
+                elif entering_result == 'timeout':
+                    msg = '[NC] Timeout, Unable to Confirm that AMR has done entering.'
+                    rospy.logwarn(msg)
+                    sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
+                    # TODO: Could be node fial. Set recovery mode here.
+                    pass
+
+            elif robotStatus.status in ['inEV', 'inEV_C']:
+                rospy.loginfo('[NC] Task Path: ' + str(task_path))
+                # TODO: Start EV Door Monitor Here.
+                reach_result = ev_agent_reach(target_floor, service_dict['ev_timeout'])
+                if reach_result == 'correct':
+                    robotStatus.set_status('inEV_R')
+                    pub_robot_status()
+                    # 4-2. Wait for EV reach >>> Timeout
+                elif reach_result == 'timeout':
+                    msg = '[NC] EV can not reach target floor in 10m.'
+                    rospy.logwarn(msg)
+                    robotStatus.error['ev_no_response'] += 1
+                    pub_robot_status()
+                    sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
+                    # >>>   Retry
+                    pass
+                elif reach_result == 'wrong_floor':
+                    msg = '[NC] Receive EV reached. >>> Floor Mismatch.'
+                    rospy.logwarn(msg)
+                    sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
+                    # >>>   Retry
+                    pass
+            elif robotStatus.status == 'inEV_R':
+                rospy.loginfo('[NC] Task Path: ' + str(task_path))
+                # alightEVPub.publish(target_floor)
+                announce = unicode('机器人正要出电梯, 外面的朋友请小心... 外面的朋友请小心.. 机器人正要出电梯. 十分感谢您的配合', 'utf-8')
+                ttsPub.publish(announce)
+                robotStatus.set_status('alightingEV')
+                pub_robot_status()
+                # Method 1, Move_base
+                if alight_mb_on:
+                    # time_limit = 10s (100 * 0.1s)
+                    task_path, node_reach = move_base_agent(task_path, 100)
+                    if node_reach:
+                        robotStatus.set_status('moving')
+                        pub_robot_status()
+                        pass
+                    else:
+                        skip_node = task_path.pop(0)
+                        rospy.loginfo('[NC] Skip the node: ' + str(skip_node))
+                        robotStatus.position = skip_node
+                        pub_robot_status()
+                        rospy.loginfo('[NC] Task Path: ' + str(task_path))
+                        pass
+                else:
+                    target_floor = task_path[0][3:] + 'F'
+                    currentFloorPub.publish(target_floor)
+                    # Wait for tts
+                    rospy.sleep(1.0)
+                    alight_result = alighting_elevator(target_floor, alightEVPub)
+                    if alight_result == 'done':
+                        current_node = task_path.pop(0)
+                        robotStatus.position = current_node
+                        robotStatus.set_status('node_reached')
+                        pub_robot_status()
+                        # 4-2. Wait for EV reach >>> Timeout
+                    elif alight_result == 'timeout':
+                        msg = '[NC] EV Alighting timeout. Resent alight command.'
+                        rospy.logwarn(msg)
+                        robotStatus.error['ev_no_response'] += 1
+                        sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
+                        # >>>   Retry
+                        pass
+                    elif alight_result == 'error':
+                        msg = '[NC] EV Alighting Error. Resent alight command.'
+                        rospy.logwarn(msg)
+                        sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
+                        # >>>   Retry
+                        pass
+            else:
+                # move_base timeout = 5m (300s)
+                task_path, node_reach = move_base_agent(task_path, 3000)
+                if node_reach:
+                    if robotStatus.mission == robotStatus.position:
+                        robotStatus.set_status('reached')
+                        pub_robot_status()
+                        pass
+                else:
+                    msg = '[NC] Send Goal to move_base >>> No response >>> Timeout.'
+                    rospy.logwarn(msg)
+                    sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
+                    pass
+
         # Scene II, Got Mission and task_path is empty.
         elif robotStatus.mission is not None and robotStatus.status == "reached":
             # Inform the User Interface, Mission Complete.
@@ -778,7 +963,7 @@ def navi_center():
             pub_robot_status()
         # No mission => Standby
         else:
-            rospy.sleep(2.0)
+            rospy.sleep(0.1)
 
     # R. Recovery Mode.
 

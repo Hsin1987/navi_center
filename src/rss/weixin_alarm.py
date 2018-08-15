@@ -1,6 +1,7 @@
 import requests
 import json
 import rospy
+import time, datetime
 # from account_info import corp_id, corp_secret, agent_id
 # corp_id = corp_id()
 # corp_secret = corp_secret()
@@ -75,4 +76,9 @@ class WXAlarm:
                 self.access_token = self.gen_access_token()
 
 
+def sent_rss_notification(rss_on, rss_notification, robot_id,  msg):
+    ts = time.time()
+    st = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+    if rss_on:
+        rss_notification.sent(str(st) + " " + robot_id + " " + msg + " Request RSS.")
 

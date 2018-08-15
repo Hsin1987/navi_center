@@ -35,76 +35,23 @@ def set_tolerance(free_yaw_tolerance, xy_tol):
             rospy.logerr("[NC] DWAPlannerROS Service call failed: %s" % (e,))
 
 
-def goal_agent(task_goal, service_setting):
+def goal_agent(task_goal, goal_dict):
     goal = PoseStamped()
     goal.header.frame_id = 'map'
-
-    if re.match("EVW[12345678]", task_goal):
-        pose_setting = service_setting['EVW_pose'][0]
+    try:
+        pose_setting = goal_dict[task_goal]
         goal.pose.position.x = pose_setting[0]
         goal.pose.position.y = pose_setting[1]
         goal.pose.orientation.z = pose_setting[2]
         goal.pose.orientation.w = pose_setting[3]
         wide_yaw_tolerance = pose_setting[4]
         xy_goal_tolerance = pose_setting[5]
-    elif re.match("EVW[12345678]S", task_goal):
-        pose_setting = service_setting['EVWS_pose'][0]
-        goal.pose.position.x = pose_setting[0]
-        goal.pose.position.y = pose_setting[1]
-        goal.pose.orientation.z = pose_setting[2]
-        goal.pose.orientation.w = pose_setting[3]
-        wide_yaw_tolerance = pose_setting[4]
-        xy_goal_tolerance = pose_setting[5]
-    elif task_goal == 'Station':
-        pose_setting = service_setting['Station_pose'][0]
-        goal.pose.position.x = pose_setting[0]
-        goal.pose.position.y = pose_setting[1]
-        goal.pose.orientation.z = pose_setting[2]
-        goal.pose.orientation.w = pose_setting[3]
-        wide_yaw_tolerance = pose_setting[4]
-        xy_goal_tolerance = pose_setting[5]
-    elif task_goal == 'Station_out':
-        pose_setting = service_setting['Station_out_pose'][0]
-        goal.pose.position.x = pose_setting[0]
-        goal.pose.position.y = pose_setting[1]
-        goal.pose.orientation.z = pose_setting[2]
-        goal.pose.orientation.w = pose_setting[3]
-        wide_yaw_tolerance = pose_setting[4]
-        xy_goal_tolerance = pose_setting[5]
-    elif task_goal == 'Lobby':
-        pose_setting = service_setting['Lobby_pose'][0]
-        goal.pose.position.x = pose_setting[0]
-        goal.pose.position.y = pose_setting[1]
-        goal.pose.orientation.z = pose_setting[2]
-        goal.pose.orientation.w = pose_setting[3]
-        wide_yaw_tolerance = pose_setting[4]
-        xy_goal_tolerance = pose_setting[5]
-    # If task_goal is a room number
-    elif task_goal.isdigit():
-        # Room: 1 ~ 22 ; Index: 0 ~ 21
-        if task_goal in service_setting['special_room_index'][0]:
-            room_index = int(task_goal[-2:]) + service_setting['special_room_index'][1][0] - 1
-            pose_setting = service_setting['room_pose'][room_index]
-            goal.pose.position.x = pose_setting[0]
-            goal.pose.position.y = pose_setting[1]
-            goal.pose.orientation.z = pose_setting[2]
-            goal.pose.orientation.w = pose_setting[3]
-            wide_yaw_tolerance = pose_setting[4]
-            xy_goal_tolerance = pose_setting[5]
-        else:
-            room_index = int(task_goal[-2:]) - 1
-            pose_setting = service_setting['room_pose'][room_index]
-            goal.pose.position.x = pose_setting[0]
-            goal.pose.position.y = pose_setting[1]
-            goal.pose.orientation.z = pose_setting[2]
-            goal.pose.orientation.w = pose_setting[3]
-            wide_yaw_tolerance = pose_setting[4]
-            xy_goal_tolerance = pose_setting[5]
-    else:
-        print("Sth wrong")
+    except:
+        rospy.logwarn("[NC] Can access goal setting. Check: " + str(task_goal))
+        return None, None, None
     return goal, wide_yaw_tolerance, xy_goal_tolerance
 
-
+"""
 if __name__ == '__main__':
     rospy.init_node('goal_manager')
     # rospy.wait_for_service("/move_base/DWAPlannerROS/set_parameters")
@@ -118,3 +65,4 @@ if __name__ == '__main__':
     except rospy.ROSInterruptException:
         pass
 
+"""
