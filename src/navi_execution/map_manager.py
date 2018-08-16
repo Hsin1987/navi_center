@@ -1,5 +1,6 @@
 import rospy
 import rospkg
+import re
 from std_msgs.msg import String
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from basic_function import loading_service_parameter
@@ -7,6 +8,7 @@ from basic_function import loading_service_parameter
 # Map & Position Init
 changeNavMapPub = rospy.Publisher('/map_server_nav/reload', String, queue_size=1)
 changeAMCLMapPub = rospy.Publisher('/map_server_amcl/reload', String, queue_size=1)
+currentFloorPub = rospy.Publisher('/currentFloor', String, queue_size=1, latch=True)
 initPosePub = rospy.Publisher('/initialpose', PoseWithCovarianceStamped, queue_size=10)
 
 
@@ -37,23 +39,49 @@ def init_pose_on_map(floor, service_setting):
     return init_pose
 
 
-def map_client(floor, service_setting):
+def map_client(input_setting, service_setting):
     ros_package = rospkg.RosPack()
     path = ros_package.get_path('robot_unique_parameters')
 
+    # Decide the floor according to the postion.
+    predefine_list = service_setting['hotelGoals']
+    floor = None
+    if re.match("[12345678]F", input_setting):
+        floor = input_setting
+    else:
+        for raw, one_list in enumerate(predefine_list):
+            if input_setting in one_list and raw == 0:
+                floor = str(raw+1) + 'F'
+                break
+            elif input_setting in one_list:
+                floor = str(raw) + 'F'
+                break
+    if floor is None:
+        rospy.logwarn('[NC] map_client receive wrong input: ' + str(input_setting))
+        return False
+
     nav_map_path = path + '/map/map' + floor[0:-1] + '_nav.yaml'
     amcl_map_path = path + '/map/map' + floor[0:-1] + '_amcl.yaml'
-
+    currentFloorPub.publish(floor)
     changeNavMapPub.publish(nav_map_path)
     changeAMCLMapPub.publish(amcl_map_path)
     # Time for map loading
-    rospy.sleep(3.0)
+    rospy.loginfo('[NC] Request Changing Map to ' + str(floor))
+    rospy.loginfo('[NC] wait 3s.')
+    for i in range(4):
+        rospy.loginfo('[NC] Countdown: ' + str(3-i))
+        rospy.sleep(0.9)
     init_pose = init_pose_on_map(floor, service_setting)
     init_pose.header.stamp = rospy.Time.now()
     initPosePub.publish(init_pose)
     # Time for position setting.
-    rospy.sleep(6.0)
-    return
+    # Time for map loading
+    rospy.loginfo('[NC] Reset Position.')
+    rospy.loginfo('[NC] wait 6s.')
+    for i in range(7):
+        rospy.loginfo('[NC] Countdown: ' + str(6 - i))
+        rospy.sleep(0.9)
+    return True
 
 if __name__ == '__main__':
     try:

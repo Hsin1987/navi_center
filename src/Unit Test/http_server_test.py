@@ -4,18 +4,20 @@ import cherrypy
 import numpy as np
 
 # stand_by, on_mission, no_response
-ev_status = 'stand_by'
+robot_in_command = None
+
+
 
 class StringGenerator(object):
     @cherrypy.expose
     def call(self, robot_id, tid, current_floor, target_floor):
-        global ev_status
+        global robot_in_command
+        robot_in_command = robot_id
         # Random Feedback:
         p = 0.8
         available = np.random.binomial(1, p)
         if available:
-            # TODO: Need SQL Record Here.
-
+            
             return str(tid)
         else:
             # Fake, no response.
@@ -25,13 +27,30 @@ class StringGenerator(object):
 
     @cherrypy.expose
     def entering_done(self, robot_id, tid, current_floor, target_floor):
-        global ev_status
+        if robot_id != robot_in_command:
+            print('WEEIRED. Different Robot ID.')
         # Random Feedback:
         p = 0.8
         available = np.random.binomial(1, p)
         if available:
-            # TODO: Need SQL Record Here.
+            return str(tid)
+        else:
+            # Fake, no response.
+            # return str([robot_id, status, tid, current_floor, target_floor])
+            print ("PASS...............................")
+            pass
 
+    @cherrypy.expose
+    def release(self, robot_id, tid, current_floor, target_floor):
+        global robot_in_command
+        if robot_id == robot_in_command:
+            # Reset Flag
+            robot_in_command = None
+        
+        # Random Feedback:
+        p = 0.9
+        available = np.random.binomial(1, p)
+        if available:
             return str(tid)
         else:
             # Fake, no response.

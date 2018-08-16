@@ -34,7 +34,7 @@ contain in the specific status.
 """
 
 robot_status = ('init',   'charging',  'need_charging', 'available',   'received_mission',
-                'moving', 'node_reached', 'retry',
+                'departing_station', 'moving', 'node_reached', 'retry',
                 'waitEV', 'waitEV_C',   'checkingEV',  'enteringEV',
                 'inEV',   'inEV_C',    'inEV_R',        'alightingEV', 'reached',
                 'rss_request', 'rss_mode')
@@ -44,9 +44,6 @@ class RobotStatus:
     def __init__(self):
         # Robot Statue: indicate the stage of task.
         self.status = 'init'
-        # Current floor.
-        # ==  Default: Lobby
-        self.floor = '1F'
         # ==  Default: Lobby
         self.position = 'Lobby'
         # hotelGoal, received task.
@@ -99,5 +96,4 @@ class RobotStatus:
             if position_input in goal_list:
                 self.position = position_input
                 return True
-            else:
-                return False
+        return False
