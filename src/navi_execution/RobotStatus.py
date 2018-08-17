@@ -34,7 +34,7 @@ contain in the specific status.
 """
 
 robot_status = ('init',   'charging',  'need_charging', 'available',   'received_mission',
-                'departing_station', 'moving', 'node_reached', 'retry',
+                'departing_station', 'entering_station', 'moving', 'node_reached', 'retry',
                 'waitEV', 'waitEV_C',   'checkingEV',  'enteringEV',
                 'inEV',   'inEV_C',    'inEV_R',        'alightingEV', 'reached',
                 'rss_request', 'rss_mode')
@@ -56,8 +56,8 @@ class RobotStatus:
         # Aborted Task Counter:
         self.abortCount = {
             "move_base": 0,
-            "ev_check": 1,
-            'entering': 1,
+            "ev_check": 0,
+            'entering': 0,
         }
         # Aborted Task Counter:
         self.error = {

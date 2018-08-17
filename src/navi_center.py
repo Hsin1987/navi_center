@@ -1,13 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import rospy
-import threading
 import std_srvs.srv
 from std_msgs.msg import Empty, String, Float32, Float64, Bool
 from navi_execution.RobotStatus import RobotStatus
 from navi_planning.path_planner import PathPlanner
 from navi_execution.map_manager import map_client
-from navi_execution.goal_manager import set_tolerance, goal_agent
+from navi_execution.goal_manager import set_tolerance, goal_agent, ori_agent
 from navi_execution.basic_function import loading_service_parameter, loading_hotel_goal
 from navi_infra.ev_manager import ev_agent_call, inform_ev_done, ev_agent_reach, check_elevator, release_ev
 from navi_infra.ev_manager import entering_elevator, alighting_elevator
@@ -321,6 +320,9 @@ def goal_monitor(received_goal):
         return
 
     robotStatus.mission = "Received_Mission"
+    ts = time.time()
+    st = datetime.datetime.fromtimestamp(ts).strftime('%H:%M:%S')
+    robotStatus.ts_start = st
     pub_robot_status()
     # Reaction Plan
     reaction = {
@@ -461,8 +463,8 @@ def resource_monitor():
                     # Change the statue to block new task
                     robotStatus.set_status('init')
                     rospy.loginfo('tts: 执行机器人定期重启')
-                    announceMsg = unicode('执行机器人定期重启', 'utf-8')
-                    ttsPub.publish(announceMsg)
+                    announce = unicode('执行机器人定期重启', 'utf-8')
+                    ttsPub.publish(announce)
                     rospy.sleep(5)
                     rebootPub.publish(30.0)
                     rospy.sleep(120)
@@ -563,26 +565,28 @@ def depart_station(mission_path):
     msg = unicode('请小心, 机器人将离开充电区.', 'utf-8')
     rospy.loginfo("[NC] Departing Station >>> >>> >>> ")
     ttsPub.publish(msg)
-    rospy.sleep(2.0)
+
+    for i in range(2):
+        rospy.loginfo('[NC] Departure Start Countdown: ' + str(1-i))
+        rospy.sleep(0.9)
+
     departStationPub.publish(True)
-    if not mission_path[1:]:
-        robotStatus.set_status('reached')
-        rospy.loginfo('[NC] Path Finished, Goal Reached.')
-    else:
-        robotStatus.set_status('departing_station')
+    robotStatus.set_status('departing_station')
     pub_robot_status()
+
     # Release the global status.
     lock.release()
     counter = 0
     # Wait for Departure Complete
     while robotStatus.position != 'Station_out':
-        if counter >= 2000:
+        if counter >= 200:
             # rss
             robotStatus.position = 'Station_out'
             pub_robot_status()
-            msg = '[NC] Departure Station Timeout.'
+            msg = '[NC] Departure Station 20s Timeout.'
             rospy.logwarn(msg)
             sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
+            break
         else:
             rospy.sleep(0.1)
     _sub.unregister()
@@ -620,30 +624,54 @@ def enter_station(mission_path):
         rospy.loginfo("[NC] Entering Station >>> >>> >>> ")
         ttsPub.publish(msg)
         rospy.sleep(3.0)
-        departStationPub.publish(True)
+        enterStationPub.publish(True)
+        robotStatus.set_status('entering_station')
+        pub_robot_status()
         # Release the global status.
         lock.release()
         # Wait for Entering Complete
-        # TODO: It's dangerous here.
+        counter = 0
         while robotStatus.position != 'Station':
-            rospy.sleep(1)
-        _sub.unregister()
-        pub_robot_status()
-        rospy.loginfo('[NC] >>> Entering Finished.')
-        if not mission_path[1:]:
-            robotStatus.set_status('reached')
-            rospy.loginfo('[NC] Path Finished, Goal Reached.')
-        lock.release()
-        return mission_path[1:]
-    else:
-        rospy.logwarn('[NC] PMU_Offline, Abort Entering.')
+            if counter >= 200:
+                msg = '[NC] Entering Station 20s Timeout. Request RSS.'
+                rospy.logwarn(msg)
+                sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
+                break
+            else:
+                counter += 1
+                rospy.sleep(0.1)
 
-        pub_robot_status()
-        if not mission_path[1:]:
+        current_node = mission_path.pop(0)
+        robotStatus.position = current_node
+        rospy.loginfo('[NC] >>> Entering Finished.')
+        # mission_path is empty
+        if not mission_path:
             robotStatus.set_status('reached')
             rospy.loginfo('[NC] Path Finished, Goal Reached.')
+        pub_robot_status()
+        _sub.unregister()
         lock.release()
-        return mission_path[1:]
+        return mission_path
+    else:
+        if not pmu_online:
+            msg = '[NC] PMU_Offline, Abort Entering. Request Physical Reboot.'
+        elif not station_online:
+            msg = '[NC] station_offline, Abort Entering. Request on-site check.'
+        else:
+            msg = '[NC] Both offline, Abort Entering. Request on-site check'
+        rospy.logwarn(msg)
+        sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
+
+        if robotStatus.mission == 'Station':
+            robotStatus.mission = 'Station_out'
+            robotStatus.set_status('reached')
+            pub_robot_status()
+            return mission_path[1:]
+        else:
+            msg = '[NC] Entering Abort, But path is not empty: ' + str(mission_path)
+            rospy.logwarn(msg)
+            sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
+            return mission_path[1:]
 
 
 def entering_callback(success):
@@ -651,13 +679,15 @@ def entering_callback(success):
     lock.acquire()
     if success:
         robotStatus.position = 'Station'
+        lock.release()
+        return
     else:
         robotStatus.position = 'Station'
         msg = '[NC] Entering Station Return False.'
         rospy.logwarn(msg)
         sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
-    lock.release()
-    return
+        lock.release()
+        return
 
 
 def move_base_agent(mission_path, time_limit):
@@ -699,8 +729,10 @@ def move_base_agent(mission_path, time_limit):
             robotStatus.abortCount['move_base'] += 1
             counter += 1
         elif counter > time_limit:
-            rospy.logwarn('[NC] move_base timeout.')
+            msg = '[NC] move_base timeout:' + str(time_limit/10) + 's.'
             _sub.unregister()
+            rospy.logwarn(msg)
+            sent_rss_notification(rss_on, rss_notification, service_dict['AMR_ID'], msg)
             return mission_path, False
         else:
             rospy.sleep(0.1)
@@ -753,6 +785,10 @@ def move_base_callback(msg):
         rospy.loginfo("[NC] Call /move_base/clear_costmaps")
         clear_costmap()
 
+        for i in range(5):
+            rospy.loginfo('[NC] Move_base Retry Countdown: ' + str(4 - i))
+            rospy.sleep(0.9)
+
     else:
         # msg.status.status == 1,5,6,7 ...etc
         str_msg = "[NC] Move_base Issue, status = " + str(msg.status.status)
@@ -762,6 +798,29 @@ def move_base_callback(msg):
 
     lock.release()
     return
+
+
+def mission_done():
+    # TODO: Add task done logging here.
+    global robotStatus, lock
+    lock.acquire()
+    # Reset Status
+    status_agent()
+    robotStatus.mission = None
+    robotStatus.ts_start = None
+    robotStatus.abortCount = {
+        "move_base": 0,
+        "ev_check": 0,
+        'entering': 0,
+    }
+
+    robotStatus.error = {
+            "ev_no_response": 0
+        }
+    pub_robot_status()
+    lock.release()
+    return
+
 
 
 def navi_center():
@@ -914,7 +973,6 @@ def navi_center():
                     robotStatus.error['ev_no_response'] += 1
             elif robotStatus.status == 'enteringEV':
                 # done / aborted / timeout(1200)
-                inform_ev = None
 
                 counter = 0
                 entering_result = entering_elevator(current_floor, enterEVPub)
@@ -1041,16 +1099,27 @@ def navi_center():
         # Scene II, Got Mission and task_path is empty.
         elif robotStatus.mission is not None and robotStatus.status == "reached":
             # TODO: Add Ori Correction Here.
+            if robotStatus.mission.isdigit():
+                rospy.loginfo('[NC] Start Orientation Adjustment.')
+                ori_agent(robotStatus.mission, goal_dict)
+                rospy.loginfo('[NC] Start Orientation Adjustment.')
+                rospy.loginfo('tts: 行李已送达')
+                announce = unicode('行李已送达', 'utf-8')
+                ttsPub.publish(announce)
+            elif robotStatus.mission == 'Station':
+                rospy.loginfo('tts: 已回到待命区')
+                announce = unicode('已回到待命区', 'utf-8')
+                ttsPub.publish(announce)
+            else:
+                rospy.loginfo('tts: 任务已完成')
+                announce = unicode('任务已完成', 'utf-8')
+                ttsPub.publish(announce)
             # Inform the User Interface, Mission Complete.
             hotelGoalReachPub.publish(robotStatus.mission)
             # Reset Mission
-            robotStatus.mission_done()
-            # Reset Status
-            status_agent()
-            pub_robot_status()
-        # No mission => Standby
+            mission_done()
         else:
-            rospy.sleep(0.1)
+            pass
 
     # R. Recovery Mode.
 
@@ -1060,6 +1129,5 @@ if __name__ == '__main__':
     try:
         rospy.init_node("navi_center")
         navi_center()
-
     except rospy.ROSInterruptException:
         pass

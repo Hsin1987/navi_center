@@ -78,7 +78,7 @@ class WXAlarm:
 
 def sent_rss_notification(rss_on, rss_notification, robot_id,  msg):
     ts = time.time()
-    st = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+    st = datetime.datetime.fromtimestamp(ts).strftime('%H:%M:%S')
     if rss_on:
         rss_notification.sent(str(st) + " " + robot_id + " " + msg + " Request RSS.")
 

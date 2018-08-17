@@ -82,7 +82,7 @@ def pose_agent(msg):
             rospy.loginfo('Diff.   ' + str(ori_diff))
             rospy.loginfo('closest[1].   ' + str(closest[1]))
             if ori_diff < closest[1]:
-                rospy.loginfo('UPdate.   ' + str(ori_diff))
+                rospy.loginfo('Update.   ' + str(ori_diff))
                 closest[0] = ori
                 closest[1] = ori_diff
 
